@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data/
+web/data.json
+.env
+PLAN.md
