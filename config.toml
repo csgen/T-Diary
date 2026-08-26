@@ -1,0 +1,62 @@
+# tokenDiary configuration -- safe to commit.
+#
+# This file describes the SHAPE of a configuration. Which accounts you actually
+# track, where they live, and what you call them are personal settings: they
+# live in .env, which is gitignored. Copy .env.example to .env and fill it in.
+# Real environment variables override .env.
+
+# Day-boundary offset for local_date / local_hour (PLAN.md D8).
+# 8 = UTC+8 (no DST, so a fixed offset is exact).
+timezone_offset_hours = 8
+week_start = "monday"
+
+[ingest]
+# Empty string = ingest all available history (PLAN.md D10).
+from = ""
+# Keep gzipped copies of source JSONL before Claude prunes them.
+archive_raw = true
+# Files modified within this window are always parsed from byte 0 (PLAN.md D5).
+hot_window_hours = 48
+# Slack subtracted from the scan watermark, covering clock skew between hosts
+# and files written during the previous scan (PLAN.md §6.1).
+watermark_slack_seconds = 300
+
+[dashboard]
+# Earliest date to show by default. Widenable in the UI at any time.
+default_from = "${TD_DASHBOARD_FROM}"
+
+# ---------------------------------------------------------------------------
+# Source slots.
+#
+# Every slot is anonymous: nothing here says how many accounts you have, what
+# they are, or where they live. Fill in TD_S<n>_* in .env for as many as you
+# need; slots whose variables are unset are ignored. Add more slots below if
+# you run out -- an empty slot costs nothing.
+#
+# A slot with an id but no path (or vice versa) is rejected rather than
+# skipped.
+# ---------------------------------------------------------------------------
+
+[[sources]]
+id = "${TD_S1_ID}"
+label = "${TD_S1_LABEL}"
+path = "${TD_S1_PATH}"
+account_hint = "${TD_S1_EMAIL}"
+
+[[sources]]
+id = "${TD_S2_ID}"
+label = "${TD_S2_LABEL}"
+path = "${TD_S2_PATH}"
+account_hint = "${TD_S2_EMAIL}"
+
+[[sources]]
+id = "${TD_S3_ID}"
+label = "${TD_S3_LABEL}"
+path = "${TD_S3_PATH}"
+account_hint = "${TD_S3_EMAIL}"
+
+[[sources]]
+id = "${TD_S4_ID}"
+label = "${TD_S4_LABEL}"
+path = "${TD_S4_PATH}"
+account_hint = "${TD_S4_EMAIL}"
