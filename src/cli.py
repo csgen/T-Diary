@@ -16,8 +16,12 @@ from .parse import merge_records, parse_file
 from .scan import SourceUnavailable, sweep
 
 
+BYTES_PER_MB = 1024 * 1024      # mebibyte, matching how OS file managers report size
+
+
 def _fmt_mb(n: int) -> str:
-    return f"{n / 1048576:.1f} MB"
+    """Bytes -> a human-readable MB string. os.scandir reports raw bytes."""
+    return f"{n / BYTES_PER_MB:.1f} MB"
 
 
 def cmd_scan(args) -> int:
