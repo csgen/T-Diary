@@ -192,6 +192,14 @@ def cmd_ingest(args) -> int:
         collisions: list = []
         merged = merge_records(all_records, collisions=collisions)
 
+        if cfg.ingest_from:
+            before = len(merged)
+            merged = {k: r for k, r in merged.items()
+                      if r.local_date >= cfg.ingest_from}
+            if before != len(merged):
+                print(f"  ingest_from={cfg.ingest_from}: skipped "
+                      f"{before - len(merged):,} call(s) before that date")
+
         if args.dry_run:
             existing = store.existing_ids(merged)
             print(f"\ndry run: {len(merged):,} calls parsed, "
