@@ -78,7 +78,6 @@ class Config:
     timezone_offset_hours: int = DEFAULT_TZ_OFFSET_HOURS
     week_start: str = "monday"
     ingest_from: str | None = None
-    archive_raw: bool = True
     hot_window_hours: int = DEFAULT_HOT_WINDOW_HOURS
     watermark_slack_seconds: int = DEFAULT_WATERMARK_SLACK_SECONDS
     dashboard_default_from: str | None = None
@@ -93,10 +92,6 @@ class Config:
     @property
     def db_path(self) -> str:
         return f"{self.root_dir}/data/tokendiary.db"
-
-    @property
-    def archive_dir(self) -> str:
-        return f"{self.root_dir}/data/archive"
 
     def source(self, source_id: str) -> Source:
         for s in self.sources:
@@ -244,7 +239,6 @@ def load_config(path: str | None = None) -> Config:
         timezone_offset_hours=tz_off,
         week_start=str(raw.get("week_start", "monday")).lower(),
         ingest_from=(ingest.get("from") or None),
-        archive_raw=bool(ingest.get("archive_raw", True)),
         hot_window_hours=int(ingest.get("hot_window_hours", DEFAULT_HOT_WINDOW_HOURS)),
         watermark_slack_seconds=int(
             ingest.get("watermark_slack_seconds", DEFAULT_WATERMARK_SLACK_SECONDS)

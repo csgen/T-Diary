@@ -7,13 +7,17 @@ it found without writing anything. Storage lands in M1.
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
+import os
 import sys
 import time
 from collections import Counter
 
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
-from .scan import SourceUnavailable, sweep
+from .scan import SourceUnavailable, detect_deleted, sweep
+from .store import Store
 
 
 BYTES_PER_MB = 1024 * 1024      # mebibyte, matching how OS file managers report size
@@ -119,14 +123,144 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_ingest(args) -> int:
+    """Scan every source and persist what is found (PLAN.md M1).
+
+    M1 parses each file in full; offsets and the hot-file rule arrive in M3.
+    That is deliberate -- it keeps the acceptance check honest, since a second
+    run re-reads everything and must still change nothing.
+    """
+    cfg = load_config(args.config)
+    targets = [s for s in cfg.sources if not args.source or s.id in args.source]
+    if not targets:
+        print(f"no source matches {args.source}", file=sys.stderr)
+        return 2
+
+    with Store(cfg.db_path) as store:
+        store.init_schema()
+        started = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        batch_id = store.begin_batch(
+            "full" if args.full else "incremental",
+            json.dumps([s.id for s in targets]),
+        )
+        print(f"batch {batch_id}  db={cfg.db_path}")
+
+        all_records, ok_sources, failures = [], [], 0
+
+        for source in targets:
+            account = resolve_account(source)
+            store.upsert_source(source, account)
+            if not account.resolved:
+                print(f"  {source.id}: account unresolved -- {account.error}", file=sys.stderr)
+
+            try:
+                files = sweep(source)
+            except SourceUnavailable as exc:
+                # Never commit an empty scan: a silent zero renders as "you did
+                # no work that day", which is worse than a visible gap (§6.6).
+                print(f"  {source.id}: SKIPPED -- {exc}", file=sys.stderr)
+                failures += 1
+                continue
+
+            t0 = time.perf_counter()
+            records, torn = [], 0
+            for st in files:
+                res = parse_file(st.path, source.id, st.rel_path, cfg.tz)
+                records.extend(res.records)
+                torn += 1 if res.stats.torn_tail else 0
+                store.record_scan(
+                    source.id, st.path, st.size, st.mtime, res.byte_offset,
+                    res.anchor_len, res.anchor_sha256, res.anchor_uuid, "full",
+                )
+            elapsed = (time.perf_counter() - t0) * 1000
+
+            state = store.load_scan_state(source.id)
+            pruned = detect_deleted(files, state)
+            if pruned:
+                store.mark_deleted(source.id, pruned)
+
+            all_records.extend(records)
+            ok_sources.append((source, started))
+            print(
+                f"  {source.id:<10} {len(files):>3} files  {len(records):>6,} calls"
+                f"  {elapsed:>7.0f} ms"
+                + (f"  pruned:{len(pruned)}" if pruned else "")
+                + (f"  torn:{torn}" if torn else "")
+            )
+
+        collisions: list = []
+        merged = merge_records(all_records, collisions=collisions)
+
+        if cfg.ingest_from:
+            before = len(merged)
+            merged = {k: r for k, r in merged.items()
+                      if r.local_date >= cfg.ingest_from}
+            if before != len(merged):
+                print(f"  ingest_from={cfg.ingest_from}: skipped "
+                      f"{before - len(merged):,} call(s) before that date")
+
+        if args.dry_run:
+            existing = store.existing_ids(merged)
+            print(f"\ndry run: {len(merged):,} calls parsed, "
+                  f"{len(merged) - len(existing):,} would be new; nothing written")
+            store.con.rollback()
+            return 1 if failures else 0
+
+        result = store.upsert_events(merged.values(), batch_id)
+        for source, ts in ok_sources:
+            store.set_watermark(source.id, ts, full=args.full)
+        store.finish_batch(batch_id, result, notes=f"{failures} source(s) unavailable"
+                           if failures else "")
+        store.con.commit()
+
+        print(f"\n  inserted {result.inserted:,}   revised {result.revised:,}"
+              f"   unchanged {result.unchanged:,}   (of {result.seen:,} seen)")
+        if collisions:
+            print(f"  {len(collisions)} cross-source duplicate(s) counted once")
+
+    if failures:
+        print(f"{failures} source(s) unavailable", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_stats(args) -> int:
+    cfg = load_config(args.config)
+    if not os.path.exists(cfg.db_path):
+        print(f"no database yet at {cfg.db_path} -- run `ingest` first", file=sys.stderr)
+        return 2
+    with Store(cfg.db_path) as store:
+        s = store.stats()
+        print(f"database   {cfg.db_path}  ({_fmt_mb(s['db_bytes'])}, schema v{store.schema_version()})")
+        print(f"rows       {s['rows']:,} API calls   {s['tokens']:,} tokens")
+        print(f"coverage   {s['first_date']} .. {s['last_date']}   {s['active_days']} active days")
+        print(f"batches    {s['batches']}   revised rows {s['revised_rows']}"
+              f"   pruned files {s['pruned_files']}")
+        print()
+        for row in s["by_source"]:
+            print(f"  {row['source_id']:<10} {row['rows']:>7,} calls   "
+                  f"{row['d0'] or '-'} .. {row['d1'] or '-'}   {row['account_email'] or ''}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("scan", help="sweep and parse sources; write nothing")
-    s.add_argument("--sweep-only", action="store_true", help="stat sweep only, do not parse")
-    s.set_defaults(func=cmd_scan)
+    sc = sub.add_parser("scan", help="sweep and parse sources; write nothing")
+    sc.add_argument("--sweep-only", action="store_true", help="stat sweep only, do not parse")
+    sc.set_defaults(func=cmd_scan)
+
+    ing = sub.add_parser("ingest", help="scan sources and persist to the database")
+    ing.add_argument("--full", action="store_true", help="ignore scan state; reparse everything")
+    ing.add_argument("--source", action="append", help="limit to a source id (repeatable)")
+    ing.add_argument("--dry-run", action="store_true", help="parse and report; write nothing")
+    ing.set_defaults(func=cmd_ingest)
+
+    st = sub.add_parser("stats", help="summarize what is stored")
+    st.set_defaults(func=cmd_stats)
     return p
 
 

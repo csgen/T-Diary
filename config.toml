@@ -13,8 +13,6 @@ week_start = "monday"
 [ingest]
 # Empty string = ingest all available history (PLAN.md D10).
 from = ""
-# Keep gzipped copies of source JSONL before Claude prunes them.
-archive_raw = true
 # Files modified within this window are always parsed from byte 0 (PLAN.md D5).
 hot_window_hours = 48
 # Slack subtracted from the scan watermark, covering clock skew between hosts
