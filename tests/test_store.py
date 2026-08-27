@@ -16,7 +16,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.parse import UsageRecord  # noqa: E402
-from src.store import Store  # noqa: E402
+from src.store import SCHEMA_VERSION, Store  # noqa: E402
 
 
 class FakeSource:
@@ -34,6 +34,7 @@ def rec(mid="msg_a", out=100, source_id="host", **kw):
         message_id=mid, request_id="req_1", source_id=source_id, session_id="sess-1",
         project_path="/home/dev/proj", rel_path="proj/sess.jsonl", git_branch="main",
         entrypoint="cli", model="claude-opus-5", effort="high", service_tier="standard",
+        speed="standard",
         is_sidechain=0, agent_id=None, ts_utc="2026-06-29T08:00:00.000Z",
         local_date="2026-06-29", local_hour=16, iso_week="2026-W27",
         month="2026-06", year=2026, input_tokens=10, output_tokens=out,
@@ -204,7 +205,7 @@ class SchemaTests(StoreTestCase):
     def test_init_schema_is_idempotent(self):
         self.store.init_schema()
         self.store.init_schema()
-        self.assertEqual(self.store.schema_version(), 1)
+        self.assertEqual(self.store.schema_version(), SCHEMA_VERSION)
 
     def test_every_table_has_audit_columns(self):
         q = self.store.con.execute
@@ -217,6 +218,25 @@ class SchemaTests(StoreTestCase):
                 continue
             self.assertIn("created_at", cols, f"{table} lacks created_at")
             self.assertIn("updated_at", cols, f"{table} lacks updated_at")
+
+    def test_migration_converges_with_a_fresh_schema(self):
+        """A migrated database and a fresh one must hold the same columns.
+
+        Order differs by design -- ALTER TABLE appends, schema.sql places the
+        column where it reads best -- and nothing depends on ordinal position
+        because every statement binds by name.
+        """
+        fresh = {r[1] for r in self.store.con.execute("PRAGMA table_info(usage_event)")}
+        d = tempfile.mkdtemp()
+        with Store(os.path.join(d, "old.db")) as old:
+            old.con.executescript(
+                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            old.init_schema()                      # creates v2 directly
+            old.con.execute("ALTER TABLE usage_event DROP COLUMN speed")
+            old.migrate()                          # must put it back
+            migrated = {r[1] for r in old.con.execute("PRAGMA table_info(usage_event)")}
+        self.assertEqual(fresh, migrated)
+        self.assertIn("speed", migrated)
 
     def test_foreign_keys_are_enforced(self):
         with self.assertRaises(sqlite3.IntegrityError):

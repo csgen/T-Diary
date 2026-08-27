@@ -16,6 +16,7 @@ from collections import Counter
 
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
+from .price import PriceError, compute_cost, load_prices
 from .scan import SourceUnavailable, detect_deleted, sweep
 from .store import Store
 
@@ -208,6 +209,29 @@ def cmd_ingest(args) -> int:
             return 1 if failures else 0
 
         result = store.upsert_events(merged.values(), batch_id)
+
+        # Cost is computed once, here, and frozen into the row (PLAN.md D6).
+        # Editing prices.json later does not disturb it; only `recost` does.
+        try:
+            prices = load_prices(cfg.root_dir)
+            rev, created = store.current_price_rev(prices)
+            if created:
+                print(f"  registered price revision {rev} from prices.json")
+            priced = unpriced = 0
+            for row in store.unpriced(rev):
+                rates = prices.resolve(row["model"], row["local_date"], row["speed"])
+                if rates is None:
+                    store.set_cost(row["message_id"], None, None, None)
+                    unpriced += 1
+                    continue
+                cost, parts = compute_cost(row, rates, prices)
+                store.set_cost(row["message_id"], cost, json.dumps(parts), rev)
+                priced += 1
+            if priced or unpriced:
+                print(f"  priced {priced:,} row(s) at rev {rev}"
+                      + (f"; {unpriced:,} unpriced (unknown model)" if unpriced else ""))
+        except PriceError as exc:
+            print(f"  pricing skipped: {exc}", file=sys.stderr)
         for source, ts in ok_sources:
             store.set_watermark(source.id, ts, full=args.full)
         store.finish_batch(batch_id, result, notes=f"{failures} source(s) unavailable"
@@ -244,6 +268,79 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_recost(args) -> int:
+    """Re-price stored rows against the current prices.json (PLAN.md §7).
+
+    History is never rewritten implicitly. This is the only path that changes a
+    stored cost, it reports the delta before touching anything, and the
+    superseded revision's snapshot stays in price_rev for audit.
+    """
+    cfg = load_config(args.config)
+    if not os.path.exists(cfg.db_path):
+        print(f"no database at {cfg.db_path}", file=sys.stderr)
+        return 2
+
+    with Store(cfg.db_path) as store:
+        prices = load_prices(cfg.root_dir)
+        # A dry run must write nothing at all -- including a price revision.
+        # Registering one here would leave an audit row for a table that never
+        # priced anything, which is exactly the kind of noise the revision log
+        # exists to avoid.
+        known = store.find_price_rev(prices.content_hash)
+        if args.dry_run:
+            rev = known if known is not None else -1
+            print(f"prices.json matches revision {rev}" if known is not None
+                  else "prices.json is new; a revision would be registered on a real run")
+        else:
+            rev, created = store.current_price_rev(prices)
+            print(f"registered new price revision {rev}" if created
+                  else f"prices.json matches existing revision {rev}")
+
+        rows = store.priced_between(args.from_date, args.model)
+        if not rows:
+            print("no rows in range")
+            return 0
+
+        changes, unknown, delta_by_month = [], 0, {}
+        for row in rows:
+            rates = prices.resolve(row["model"], row["local_date"], row["speed"])
+            if rates is None:
+                unknown += 1
+                continue
+            new_cost, parts = compute_cost(row, rates, prices)
+            old_cost = row["cost_usd"]
+            if old_cost is None or abs(new_cost - old_cost) > 1e-12 or row["price_rev"] != rev:
+                changes.append((row["message_id"], new_cost, json.dumps(parts)))
+                d = delta_by_month.setdefault(row["month"], [0.0, 0.0, 0])
+                d[0] += old_cost or 0.0
+                d[1] += new_cost
+                d[2] += 1
+
+        print(f"\n{len(rows):,} row(s) in range; {len(changes):,} would change"
+              + (f"; {unknown:,} unpriced (unknown model)" if unknown else ""))
+        if delta_by_month:
+            print(f"\n  {'month':<10} {'rows':>7} {'old':>12} {'new':>12} {'delta':>12}")
+            for month in sorted(delta_by_month):
+                old, new, n = delta_by_month[month]
+                print(f"  {month:<10} {n:>7,} {old:>12.4f} {new:>12.4f} {new - old:>+12.4f}")
+            t_old = sum(v[0] for v in delta_by_month.values())
+            t_new = sum(v[1] for v in delta_by_month.values())
+            print(f"  {'TOTAL':<10} {len(changes):>7,} {t_old:>12.4f} {t_new:>12.4f} {t_new - t_old:>+12.4f}")
+
+        if args.dry_run:
+            print("\ndry run: nothing written")
+            return 0
+        if not changes:
+            print("\nnothing to do")
+            return 0
+
+        for message_id, cost, parts in changes:
+            store.set_cost(message_id, cost, parts, rev)
+        store.con.commit()
+        print(f"\nupdated {len(changes):,} row(s) to revision {rev}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -261,6 +358,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("stats", help="summarize what is stored")
     st.set_defaults(func=cmd_stats)
+
+    rc = sub.add_parser("recost", help="re-price stored rows against current prices.json")
+    rc.add_argument("--from", dest="from_date", metavar="DATE",
+                    help="only rows on or after this local date (YYYY-MM-DD)")
+    rc.add_argument("--model", help="limit to one model id")
+    rc.add_argument("--dry-run", action="store_true",
+                    help="report the delta without writing")
+    rc.set_defaults(func=cmd_recost)
     return p
 
 

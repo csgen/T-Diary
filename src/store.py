@@ -18,7 +18,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Used by the handful of statements that stamp a time from SQL rather than
 # relying on a column default. Same format as schema.sql: UTC, milliseconds.
@@ -39,7 +39,7 @@ def load_schema() -> str:
 INSERT_COLUMNS = (
     "message_id", "request_id", "source_id", "account_uuid", "session_ref",
     "project_id", "file_id", "git_branch", "entrypoint", "model", "effort",
-    "service_tier", "is_sidechain", "agent_id", "ts_utc", "local_date",
+    "service_tier", "speed", "is_sidechain", "agent_id", "ts_utc", "local_date",
     "local_hour", "iso_week", "month", "year",
     "input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens",
     "cache_write_5m_tokens", "cache_write_1h_tokens", "web_search_requests",
@@ -110,6 +110,31 @@ class Store:
 
     # -- schema ------------------------------------------------------------
 
+    def _ensure_column(self, table: str, column: str, decl: str) -> bool:
+        """Add a column if absent. Idempotent, so a fresh database created from
+        schema.sql and an older one being migrated converge on the same shape."""
+        cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
+        if column in cols:
+            return False
+        self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        return True
+
+    def migrate(self) -> list[str]:
+        """Bring an existing database up to SCHEMA_VERSION. Additive only --
+        no migration may drop or rewrite a column that holds usage data."""
+        applied = []
+        if self._ensure_column("usage_event", "speed", "TEXT"):
+            # Fast mode prices Opus 5 / 4.8 at 2x standard, so a call's speed
+            # has to be stored or those rows would be silently under-costed.
+            applied.append("v2: usage_event.speed")
+        self.con.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
+        self.con.commit()
+        return applied
+
     def init_schema(self) -> None:
         self.con.executescript(load_schema())
         self.con.execute(
@@ -118,6 +143,7 @@ class Store:
             (str(SCHEMA_VERSION),),
         )
         self.con.commit()
+        self.migrate()
 
     def schema_version(self) -> int:
         row = self.con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -288,6 +314,81 @@ class Store:
                 for r in self.con.execute("SELECT source_id, account_uuid FROM dim_source")
             }
         return self._acct_cache
+
+    # -- pricing -----------------------------------------------------------
+
+    def find_price_rev(self, content_hash: str) -> int | None:
+        """The revision for this exact prices.json, or None. Read-only."""
+        row = self.con.execute(
+            "SELECT rev FROM price_rev WHERE content_hash=?", (content_hash,)
+        ).fetchone()
+        return row["rev"] if row else None
+
+    def current_price_rev(self, prices) -> tuple[int, bool]:
+        """The revision matching this prices.json, creating one if it is new.
+
+        Keyed by the file's content hash: edit prices.json and you get a new
+        revision with a full snapshot, so a past cost can always be explained
+        by the table that produced it. Returns (rev, created).
+        """
+        row = self.con.execute(
+            "SELECT rev FROM price_rev WHERE content_hash=?", (prices.content_hash,)
+        ).fetchone()
+        if row:
+            return row["rev"], False
+        cur = self.con.execute(
+            f"INSERT INTO price_rev(applied_at, content_hash, prices_json, note) "
+            f"VALUES ({NOW_SQL}, ?, ?, ?)",
+            (prices.content_hash, prices.raw, f"auto-registered from {prices.path}"),
+        )
+        self.con.commit()
+        return cur.lastrowid, True
+
+    def set_cost(self, message_id: str, cost: float | None,
+                 breakdown: str | None, rev: int | None) -> None:
+        self.con.execute(
+            "UPDATE usage_event SET cost_usd=?, cost_breakdown_json=?, price_rev=? "
+            "WHERE message_id=?",
+            (cost, breakdown, rev, message_id),
+        )
+
+    def unpriced(self, rev: int, since: str | None = None, model: str | None = None):
+        """Rows not yet costed under `rev`. Used by both ingest and recost."""
+        sql = ("SELECT * FROM usage_event WHERE (price_rev IS NULL OR price_rev != :rev)")
+        params: dict = {"rev": rev}
+        if since:
+            sql += " AND local_date >= :since"
+            params["since"] = since
+        if model:
+            sql += " AND model = :model"
+            params["model"] = model
+        return self.con.execute(sql, params).fetchall()
+
+    def priced_between(self, since: str | None = None, model: str | None = None):
+        sql = "SELECT * FROM usage_event WHERE 1=1"
+        params: dict = {}
+        if since:
+            sql += " AND local_date >= :since"
+            params["since"] = since
+        if model:
+            sql += " AND model = :model"
+            params["model"] = model
+        return self.con.execute(sql, params).fetchall()
+
+    def cost_by_month(self, since: str | None = None) -> list[dict]:
+        sql = ("SELECT month, COUNT(*) n, SUM(cost_usd) cost, "
+               "SUM(cost_usd IS NULL) unpriced FROM usage_event")
+        params: tuple = ()
+        if since:
+            sql += " WHERE local_date >= ?"
+            params = (since,)
+        sql += " GROUP BY month ORDER BY month"
+        return [dict(r) for r in self.con.execute(sql, params)]
+
+    def unknown_models(self) -> list[dict]:
+        return [dict(r) for r in self.con.execute(
+            "SELECT model, COUNT(*) n FROM usage_event WHERE cost_usd IS NULL "
+            "GROUP BY model ORDER BY n DESC")]
 
     # -- scan state --------------------------------------------------------
 

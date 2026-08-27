@@ -30,6 +30,7 @@ class UsageRecord:
     model: str
     effort: str | None
     service_tier: str | None
+    speed: str | None
     is_sidechain: int
     agent_id: str | None
     ts_utc: str
@@ -185,6 +186,7 @@ def parse_file(
                     model=model,
                     effort=obj.get("effort"),
                     service_tier=usage.get("service_tier"),
+                    speed=usage.get("speed"),
                     is_sidechain=1 if obj.get("isSidechain") else 0,
                     agent_id=obj.get("agentId"),
                     ts_utc=ts,
