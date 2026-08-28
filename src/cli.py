@@ -17,7 +17,8 @@ from collections import Counter
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
 from .price import PriceError, PriceRevConflict, compute_cost, load_prices
-from .scan import SourceUnavailable, detect_deleted, sweep
+from .scan import (SourceUnavailable, detect_deleted, head_bytes, head_sha256,
+                   plan_read, select_candidates, sweep)
 from .store import SCHEMA_VERSION, SchemaTooNew, Store
 
 
@@ -165,30 +166,62 @@ def cmd_ingest(args) -> int:
                 failures += 1
                 continue
 
+            # Stage 1: what changed since the last successful scan.
+            state = store.load_scan_state(source.id)
+            candidates = select_candidates(
+                files, state, store.watermark(source.id),
+                slack_seconds=cfg.watermark_slack_seconds,
+                hot_window_hours=cfg.hot_window_hours,
+                force_full=args.full,
+            )
+
             t0 = time.perf_counter()
-            records, torn = [], 0
-            for st in files:
-                res = parse_file(st.path, source.id, st.rel_path, cfg.tz)
+            records, torn, bytes_read = [], 0, 0
+            modes = Counter()
+            for cand in candidates:
+                st = cand.file
+                plan = plan_read(cand, state.get(st.path))
+                modes[plan.reason] += 1
+                if plan.mode == "skip":
+                    continue
+
+                res = parse_file(st.path, source.id, st.rel_path, cfg.tz,
+                                 start_offset=plan.start_offset)
                 records.extend(res.records)
                 torn += 1 if res.stats.torn_tail else 0
+                bytes_read += res.byte_offset - plan.start_offset
+
+                # A resume that found no complete new line must not erase the
+                # anchor that made the resume possible.
+                prev = state.get(st.path) or {}
+                anchor_len = res.anchor_len or (prev.get("anchor_len") or 0)
+                anchor_sha = res.anchor_sha256 or prev.get("anchor_sha256")
+                anchor_uuid = res.anchor_uuid or prev.get("anchor_uuid")
+
                 store.record_scan(
                     source.id, st.path, st.size, st.mtime, res.byte_offset,
-                    res.anchor_len, res.anchor_sha256, res.anchor_uuid, "full",
+                    anchor_len, anchor_sha, anchor_uuid, plan.reason,
+                    head_sha256=head_sha256(st.path, head_bytes(res.byte_offset)),
+                    was_reset=plan.is_reset,
                 )
             elapsed = (time.perf_counter() - t0) * 1000
 
-            state = store.load_scan_state(source.id)
             pruned = detect_deleted(files, state)
             if pruned:
                 store.mark_deleted(source.id, pruned)
 
             all_records.extend(records)
             ok_sources.append((source, started))
+            skipped = len(files) - len(candidates)
+            detail = " ".join(f"{k}:{v}" for k, v in sorted(modes.items()) if k != "unchanged")
             print(
-                f"  {source.id:<10} {len(files):>3} files  {len(records):>6,} calls"
+                f"  {source.id:<10} {len(files):>3} files"
+                f"  read {_fmt_mb(bytes_read):>9}  {len(records):>6,} calls"
                 f"  {elapsed:>7.0f} ms"
+                + (f"  skipped:{skipped}" if skipped else "")
                 + (f"  pruned:{len(pruned)}" if pruned else "")
                 + (f"  torn:{torn}" if torn else "")
+                + (f"   [{detail}]" if detail else "")
             )
 
         collisions: list = []
@@ -211,7 +244,7 @@ def cmd_ingest(args) -> int:
 
         result = store.upsert_events(merged.values(), batch_id)
 
-        # Cost is computed once, here, and frozen into the row (PLAN.md D6).
+        # Cost is computed once, here, and frozen into the row.
         # Editing prices.json later does not disturb it; only `recost` does.
         try:
             prices = load_prices(cfg.root_dir)
@@ -280,7 +313,7 @@ def cmd_stats(args) -> int:
 
 
 def cmd_recost(args) -> int:
-    """Re-price stored rows against the current prices.json (PLAN.md §7).
+    """Re-price stored rows against the current prices.json.
 
     History is never rewritten implicitly. This is the only path that changes a
     stored cost, it reports the delta before touching anything, and the

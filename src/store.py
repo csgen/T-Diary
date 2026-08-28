@@ -487,12 +487,20 @@ class Store:
 
     def record_scan(self, source_id: str, file_path: str, size: int, mtime: float,
                     byte_offset: int, anchor_len: int, anchor_sha256: str | None,
-                    anchor_uuid: str | None, result: str) -> None:
+                    anchor_uuid: str | None, result: str,
+                    head_sha256: str | None = None, was_reset: bool = False) -> None:
+        """Store where reading stopped and how to verify that point next time.
+
+        `was_reset` counts fast paths that failed verification -- a file whose
+        reset_count keeps climbing is churning, which is the visible symptom of
+        a writer rewriting content we thought was settled.
+        """
         self.con.execute(
             f"""INSERT INTO scan_state
                   (source_id, file_path, size, mtime, byte_offset, anchor_len,
-                   anchor_sha256, anchor_uuid, last_scan, last_result)
-                VALUES (?,?,?,?,?,?,?,?,{NOW_SQL},?)
+                   anchor_sha256, anchor_uuid, head_sha256, last_scan,
+                   last_result, reset_count)
+                VALUES (?,?,?,?,?,?,?,?,?,{NOW_SQL},?,?)
                 ON CONFLICT(source_id, file_path) DO UPDATE SET
                   size = excluded.size,
                   mtime = excluded.mtime,
@@ -500,11 +508,13 @@ class Store:
                   anchor_len = excluded.anchor_len,
                   anchor_sha256 = excluded.anchor_sha256,
                   anchor_uuid = excluded.anchor_uuid,
+                  head_sha256 = COALESCE(excluded.head_sha256, scan_state.head_sha256),
                   last_scan = {NOW_SQL},
                   last_result = excluded.last_result,
+                  reset_count = scan_state.reset_count + excluded.reset_count,
                   deleted_at = NULL""",
             (source_id, file_path, size, mtime, byte_offset, anchor_len,
-             anchor_sha256, anchor_uuid, result),
+             anchor_sha256, anchor_uuid, head_sha256, result, 1 if was_reset else 0),
         )
 
     def mark_deleted(self, source_id: str, paths) -> int:
