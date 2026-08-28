@@ -16,9 +16,9 @@ from collections import Counter
 
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
-from .price import PriceError, compute_cost, load_prices
+from .price import PriceError, PriceRevConflict, compute_cost, load_prices
 from .scan import SourceUnavailable, detect_deleted, sweep
-from .store import Store
+from .store import SCHEMA_VERSION, SchemaTooNew, Store
 
 
 BYTES_PER_MB = 1024 * 1024      # mebibyte, matching how OS file managers report size
@@ -138,7 +138,8 @@ def cmd_ingest(args) -> int:
         return 2
 
     with Store(cfg.db_path) as store:
-        store.init_schema()
+        for applied in store.init_schema():
+            print(f"  schema migration applied: {applied}")
         started = datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ")
         batch_id = store.begin_batch(
@@ -214,11 +215,11 @@ def cmd_ingest(args) -> int:
         # Editing prices.json later does not disturb it; only `recost` does.
         try:
             prices = load_prices(cfg.root_dir)
-            rev, created = store.current_price_rev(prices)
+            rev, created = store.register_price_rev(prices)
             if created:
-                print(f"  registered price revision {rev} from prices.json")
+                print(f"  recorded price revision {rev} (declared in prices.json)")
             priced = unpriced = 0
-            for row in store.unpriced(rev):
+            for row in store.uncosted():
                 rates = prices.resolve(row["model"], row["local_date"], row["speed"])
                 if rates is None:
                     store.set_cost(row["message_id"], None, None, None)
@@ -228,8 +229,18 @@ def cmd_ingest(args) -> int:
                 store.set_cost(row["message_id"], cost, json.dumps(parts), rev)
                 priced += 1
             if priced or unpriced:
-                print(f"  priced {priced:,} row(s) at rev {rev}"
+                print(f"  priced {priced:,} new row(s) at rev {rev}"
                       + (f"; {unpriced:,} unpriced (unknown model)" if unpriced else ""))
+            # Existing rows keep the cost they were given. Report the drift so
+            # bringing them forward stays a deliberate `recost`, never a
+            # side effect of a routine scan.
+            stale = store.rows_on_other_revs(rev)
+            if stale:
+                detail = ", ".join(f"{s['n']:,} at rev {s['price_rev']}" for s in stale)
+                print(f"  note: {detail}; current table is rev {rev}. "
+                      f"Run `recost --dry-run` to see what would change.")
+        except PriceRevConflict:
+            raise                      # a declared revision that lies is fatal
         except PriceError as exc:
             print(f"  pricing skipped: {exc}", file=sys.stderr)
         for source, ts in ok_sources:
@@ -286,15 +297,14 @@ def cmd_recost(args) -> int:
         # Registering one here would leave an audit row for a table that never
         # priced anything, which is exactly the kind of noise the revision log
         # exists to avoid.
-        known = store.find_price_rev(prices.content_hash)
         if args.dry_run:
-            rev = known if known is not None else -1
-            print(f"prices.json matches revision {rev}" if known is not None
-                  else "prices.json is new; a revision would be registered on a real run")
+            rev, is_new = store.check_price_rev(prices)          # validates, writes nothing
+            print(f"prices.json declares rev {rev}"
+                  + (" (not yet recorded; a real run would record it)" if is_new else ""))
         else:
-            rev, created = store.current_price_rev(prices)
-            print(f"registered new price revision {rev}" if created
-                  else f"prices.json matches existing revision {rev}")
+            rev, is_new = store.register_price_rev(prices)
+            print(f"recorded price revision {rev}" if is_new
+                  else f"prices.json declares rev {rev}, already recorded")
 
         rows = store.priced_between(args.from_date, args.model)
         if not rows:
@@ -341,6 +351,50 @@ def cmd_recost(args) -> int:
     return 0
 
 
+def cmd_migrate(args) -> int:
+    """Inspect or apply pending schema migrations.
+
+    `ingest` migrates automatically, so this exists for the case that matters:
+    looking at what a migration will do to a database holding the only surviving
+    copy of pruned history, before it happens.
+    """
+    cfg = load_config(args.config)
+    if not os.path.exists(cfg.db_path):
+        print(f"no database at {cfg.db_path} -- `ingest` creates one", file=sys.stderr)
+        return 2
+
+    with Store(cfg.db_path) as store:
+        found = store.stored_version()
+        print(f"database   {cfg.db_path}")
+        print(f"schema     v{found} stored, v{SCHEMA_VERSION} supported by this build")
+
+        if found > SCHEMA_VERSION:
+            print()
+            print("refusing: database is NEWER than this build understands.",
+                  file=sys.stderr)
+            return 1
+
+        pending = store.pending_migrations()
+        print()
+        if not pending:
+            print("up to date; nothing to apply")
+            return 0
+
+        print(f"{len(pending)} pending:")
+        for item in pending:
+            print(f"  {item}")
+        print()
+
+        if args.check:
+            print("--check: nothing written")
+            return 0
+
+        applied = store.migrate()
+        print(f"applied {len(applied)}; database is now v{store.schema_version()}")
+        print("note: new columns are added empty -- existing rows are not backfilled")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -366,6 +420,11 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--dry-run", action="store_true",
                     help="report the delta without writing")
     rc.set_defaults(func=cmd_recost)
+
+    mg = sub.add_parser("migrate", help="inspect or apply pending schema migrations")
+    mg.add_argument("--check", action="store_true",
+                    help="report what is pending without applying it")
+    mg.set_defaults(func=cmd_migrate)
     return p
 
 
@@ -376,6 +435,12 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
+    except SchemaTooNew as exc:
+        print(f"schema error: {exc}", file=sys.stderr)
+        return 3
+    except PriceError as exc:
+        print(f"price error: {exc}", file=sys.stderr)
+        return 4
 
 
 if __name__ == "__main__":

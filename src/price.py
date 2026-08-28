@@ -1,6 +1,6 @@
-"""Cost computation and rate-table versioning (PLAN.md D6, §7).
+"""Cost computation and rate-table versioning.
 
-Two independent time axes, and conflating them is where cost dashboards go wrong:
+Two independent time axes:
 
   effective_from   when a price applied to USAGE      -- inside prices.json
   rev              when we RECORDED that price        -- the price_rev table
@@ -33,6 +33,37 @@ class PriceError(Exception):
     """prices.json is missing or malformed."""
 
 
+class PriceRevConflict(PriceError):
+    """The rates changed but `rev` was not bumped.
+
+    Revisions are declared by hand, not inferred from the file, so nothing
+    happens when comments are reworded or the file is reformatted. The one
+    thing that must not happen is two different rate tables sharing a revision
+    number: the stored costs would then be unauditable, because the snapshot
+    behind them no longer matches what produced them.
+    """
+
+
+def semantic_hash(data: dict) -> str:
+    """Fingerprint of the parts of prices.json that can change a cost.
+
+    NOT used to decide the revision number -- that is declared by hand in the
+    file's `rev` field. This exists only as an integrity check: it catches a
+    rate edited without bumping `rev`, which would leave stored costs pointing
+    at a snapshot that no longer explains them.
+
+    Only `models` and `server_tools` are covered, canonically serialized, so
+    rewording notes or reformatting the file changes nothing.
+    """
+    payload = {
+        "models": data.get("models") or {},
+        "server_tools": {k: v for k, v in (data.get("server_tools") or {}).items()
+                         if not k.startswith("_")},
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass(slots=True)
 class RateCard:
     """The five per-MTok rates that apply to one call."""
@@ -49,6 +80,7 @@ class RateCard:
 
 @dataclass(slots=True)
 class Prices:
+    rev: int
     models: dict[str, list[dict]]
     web_search_per_request: float
     web_fetch_per_request: float
@@ -111,6 +143,14 @@ def load_prices(root_dir: str) -> Prices:
     except ValueError as exc:
         raise PriceError(f"{path}: invalid JSON ({exc})") from exc
 
+    rev = data.get("rev")
+    if not isinstance(rev, int) or rev < 1:
+        raise PriceError(
+            f'{path}: needs a top-level integer "rev" (1 or greater). '
+            f"Revisions are declared, not inferred: bump it yourself when you "
+            f"change a rate, and leave it alone for comment or formatting edits."
+        )
+
     models = data.get("models") or {}
     if not models:
         raise PriceError(f"{path}: no 'models' section")
@@ -124,12 +164,12 @@ def load_prices(root_dir: str) -> Prices:
 
     tools = data.get("server_tools") or {}
     return Prices(
+        rev=rev,
         models=models,
         web_search_per_request=float(tools.get("web_search_per_request", 0.0)),
         web_fetch_per_request=float(tools.get("web_fetch_per_request", 0.0)),
-        # Hash the bytes on disk: this is what decides whether a new price_rev
-        # is needed, so it must change whenever the file does.
-        content_hash=hashlib.sha256(raw_bytes).hexdigest(),
+        # Integrity check only; the revision number comes from `rev` above.
+        content_hash=semantic_hash(data),
         raw=raw_bytes.decode("utf-8"),
         path=path,
     )

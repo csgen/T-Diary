@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.price import PriceError, compute_cost, load_prices  # noqa: E402
+from src.price import PriceError, compute_cost, load_prices, semantic_hash  # noqa: E402
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -33,9 +33,13 @@ def row(**kw):
     return Row(base)
 
 
-def write_prices(models: dict, tools: dict | None = None) -> str:
+def write_prices(models: dict, tools: dict | None = None, rev: int = 1,
+                 meta: dict | None = None) -> str:
     d = tempfile.mkdtemp()
-    payload = {"models": models, "server_tools": tools or {"web_search_per_request": 0.01}}
+    payload = {"rev": rev, "models": models,
+               "server_tools": tools or {"web_search_per_request": 0.01}}
+    if meta is not None:
+        payload["meta"] = meta
     with open(f"{d}/prices.json", "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
     return d
@@ -140,6 +144,18 @@ class ComputeCostTests(unittest.TestCase):
 
 
 class PricesFileTests(unittest.TestCase):
+    def test_rev_is_required(self):
+        """Revisions are declared, so the declaration cannot be optional."""
+        d = tempfile.mkdtemp()
+        with open(f"{d}/prices.json", "w", encoding="utf-8") as fh:
+            json.dump({"models": SIMPLE}, fh)
+        with self.assertRaises(PriceError) as ctx:
+            load_prices(d)
+        self.assertIn("rev", str(ctx.exception))
+
+    def test_rev_is_read_from_the_file(self):
+        self.assertEqual(load_prices(write_prices(SIMPLE, rev=7)).rev, 7)
+
     def test_missing_file_raises(self):
         with self.assertRaises(PriceError):
             load_prices(tempfile.mkdtemp())
@@ -149,12 +165,37 @@ class PricesFileTests(unittest.TestCase):
         with self.assertRaises(PriceError):
             load_prices(d)
 
-    def test_hash_changes_when_the_file_changes(self):
+    def test_hash_changes_when_a_rate_changes(self):
         """The hash is what decides whether a new price_rev is needed."""
         a = load_prices(write_prices(SIMPLE))
         bumped = {"m1": [{**SIMPLE["m1"][0], "output": 101.0}]}
         b = load_prices(write_prices(bumped))
         self.assertNotEqual(a.content_hash, b.content_hash)
+
+    def test_comments_and_formatting_do_not_change_the_hash(self):
+        """Editing prose must not mint a revision or prompt a recost.
+
+        A revision means "the rates changed". Hashing the whole file made
+        rewording a note look identical to a price change.
+        """
+        base = {"models": SIMPLE, "server_tools": {"web_search_per_request": 0.01}}
+        reworded = {
+            **base,
+            "meta": {"note": ["totally different text"], "retrieved": "2099-01-01"},
+            "server_tools": {"web_search_per_request": 0.01,
+                             "_note": "an explanatory underscore key"},
+        }
+        self.assertEqual(semantic_hash(base), semantic_hash(reworded))
+
+    def test_key_order_does_not_change_the_hash(self):
+        a = {"models": {"x": [{"input": 1, "output": 2}]}, "server_tools": {"b": 1, "a": 2}}
+        b = {"server_tools": {"a": 2, "b": 1}, "models": {"x": [{"output": 2, "input": 1}]}}
+        self.assertEqual(semantic_hash(a), semantic_hash(b))
+
+    def test_server_tool_rate_change_does_change_the_hash(self):
+        a = {"models": SIMPLE, "server_tools": {"web_search_per_request": 0.01}}
+        b = {"models": SIMPLE, "server_tools": {"web_search_per_request": 0.02}}
+        self.assertNotEqual(semantic_hash(a), semantic_hash(b))
 
     def test_shipped_prices_file_covers_every_model_in_use(self):
         """The real prices.json must price every model this project has seen."""
