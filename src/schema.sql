@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS usage_event (
   model          TEXT NOT NULL,
   effort         TEXT,
   service_tier   TEXT,
+  speed          TEXT,
   is_sidechain   INTEGER NOT NULL DEFAULT 0,
   agent_id       TEXT,
 

@@ -155,6 +155,7 @@ class MergeTests(unittest.TestCase):
             message_id=mid, request_id=None, source_id=source_id, session_id="s",
             project_path="/home/dev/proj", rel_path=rel_path, git_branch=None,
             entrypoint=None, model="claude-opus-4-8", effort=None, service_tier=None,
+            speed=None,
             is_sidechain=0, agent_id=None, ts_utc="2026-08-11T09:26:47.000Z",
             local_date="2026-08-11", local_hour=17, iso_week="2026-W33",
             month="2026-08", year=2026, input_tokens=1, output_tokens=out,

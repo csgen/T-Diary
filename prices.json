@@ -1,0 +1,121 @@
+{
+  "rev": 2,
+  "meta": {
+    "currency": "USD",
+    "unit": "per million tokens",
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "retrieved": "2026-08-28",
+    "note": [
+      "These are Anthropic first-party API list prices. tokenDiary reports NOTIONAL cost:",
+      "what this usage would have cost at API rates. Both tracked accounts are",
+      "subscription-billed, so this is an intensity metric.",
+      "",
+      "Cache multipliers relative to base input, per the published table:",
+      "  5-minute cache write  1.25x     1-hour cache write  2.0x     cache read  0.1x",
+      "",
+      "effective_from is set to a floor date because the published page gives current",
+      "prices only."
+    ]
+  },
+  "server_tools": {
+    "web_search_per_request": 0.01,
+    "web_fetch_per_request": 0.0,
+    "_note": "Web search is $10 per 1,000 searches. Web fetch adds no charge beyond tokens."
+  },
+  "models": {
+    "claude-fable-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 10.0,
+        "output": 50.0,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20.0,
+        "cache_read": 1.0
+      }
+    ],
+    "claude-opus-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 5.0,
+        "output": 25.0,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.0,
+        "cache_read": 0.5,
+        "fast": {
+          "input": 10.0,
+          "output": 50.0,
+          "cache_write_5m": 12.5,
+          "cache_write_1h": 20.0,
+          "cache_read": 1.0
+        }
+      }
+    ],
+    "claude-opus-4-8": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 5.0,
+        "output": 25.0,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.0,
+        "cache_read": 0.5,
+        "fast": {
+          "input": 10.0,
+          "output": 50.0,
+          "cache_write_5m": 12.5,
+          "cache_write_1h": 20.0,
+          "cache_read": 1.0
+        }
+      }
+    ],
+    "claude-opus-4-7": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 5.0,
+        "output": 25.0,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.0,
+        "cache_read": 0.5
+      }
+    ],
+    "claude-opus-4-6": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 5.0,
+        "output": 25.0,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.0,
+        "cache_read": 0.5
+      }
+    ],
+    "claude-sonnet-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 2.0,
+        "output": 10.0,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4.0,
+        "cache_read": 0.2
+      }
+    ],
+    "claude-sonnet-4-6": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write_5m": 3.75,
+        "cache_write_1h": 6.0,
+        "cache_read": 0.3
+      }
+    ],
+    "claude-haiku-4-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 1.0,
+        "output": 5.0,
+        "cache_write_5m": 1.25,
+        "cache_write_1h": 2.0,
+        "cache_read": 0.1
+      }
+    ]
+  }
+}

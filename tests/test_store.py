@@ -7,6 +7,7 @@ missing source file never removes a row.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -16,7 +17,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.parse import UsageRecord  # noqa: E402
-from src.store import Store  # noqa: E402
+from src.price import PriceRevConflict  # noqa: E402
+from src.store import SCHEMA_VERSION, SchemaTooNew, Store  # noqa: E402
 
 
 class FakeSource:
@@ -34,6 +36,7 @@ def rec(mid="msg_a", out=100, source_id="host", **kw):
         message_id=mid, request_id="req_1", source_id=source_id, session_id="sess-1",
         project_path="/home/dev/proj", rel_path="proj/sess.jsonl", git_branch="main",
         entrypoint="cli", model="claude-opus-5", effort="high", service_tier="standard",
+        speed="standard",
         is_sidechain=0, agent_id=None, ts_utc="2026-06-29T08:00:00.000Z",
         local_date="2026-06-29", local_hour=16, iso_week="2026-W27",
         month="2026-06", year=2026, input_tokens=10, output_tokens=out,
@@ -170,6 +173,104 @@ class DimensionTests(StoreTestCase):
         self.assertEqual(self.row("a")["account_uuid"], "acct-1")
 
 
+class PricingBoundaryTests(StoreTestCase):
+    """Ingest prices new rows only; re-pricing is recost's job alone."""
+
+    def _cost(self, mid, cost, rev):
+        # usage_event.price_rev is a real foreign key, so the revision has to
+        # exist before a row can point at it.
+        self.store.con.execute(
+            "INSERT INTO price_rev(rev, applied_at, content_hash, prices_json) "
+            "VALUES (?,?,?,?) ON CONFLICT(rev) DO NOTHING",
+            (rev, "2026-01-01T00:00:00.000Z", f"hash-{rev}", "{}"))
+        self.store.set_cost(mid, cost, "{}", rev)
+        self.store.con.commit()
+
+    def test_uncosted_returns_only_never_costed_rows(self):
+        self.ingest([rec("a"), rec("b")])
+        self._cost("a", 1.23, 1)
+        self.assertEqual([r["message_id"] for r in self.store.uncosted()], ["b"])
+
+    def test_a_row_priced_under_an_old_rev_is_not_reprised_by_ingest(self):
+        """Editing prices.json must not rewrite history through a routine scan."""
+        self.ingest([rec("a")])
+        self._cost("a", 1.23, 1)
+        self.assertEqual(self.store.uncosted(), [])      # rev 2 arrives; still untouched
+        self.assertEqual(self.row("a")["cost_usd"], 1.23)
+
+    def test_drift_onto_another_rev_is_reported(self):
+        self.ingest([rec("a"), rec("b")])
+        self._cost("a", 1.0, 1)
+        self._cost("b", 2.0, 1)
+        drift = self.store.rows_on_other_revs(2)
+        self.assertEqual(drift, [{"price_rev": 1, "n": 2}])
+
+    def test_no_drift_when_everything_is_on_the_current_rev(self):
+        self.ingest([rec("a")])
+        self._cost("a", 1.0, 3)
+        self.assertEqual(self.store.rows_on_other_revs(3), [])
+
+
+class FakePrices:
+    """Minimal stand-in for a loaded prices.json."""
+
+    def __init__(self, rev, content_hash="h1", raw=None):
+        self.rev, self.content_hash = rev, content_hash
+        self.raw = raw or json.dumps(
+            {"rev": rev, "models": {"m": [{"input": 1}]}, "server_tools": {}})
+        self.path = "prices.json"
+
+
+class DeclaredRevisionTests(StoreTestCase):
+    """The revision number is whatever prices.json declares.
+
+    Nothing is minted automatically; the only rule enforced is that one number
+    cannot stand for two different rate tables.
+    """
+
+    def snapshot(self, rev, output):
+        return json.dumps({"rev": rev, "server_tools": {},
+                           "models": {"m": [{"input": 1.0, "output": output}]}})
+
+    def prices(self, rev, output=25.0):
+        from src.price import semantic_hash
+        raw = self.snapshot(rev, output)
+        return FakePrices(rev, semantic_hash(json.loads(raw)), raw)
+
+    def test_declared_revision_is_recorded_as_given(self):
+        rev, is_new = self.store.register_price_rev(self.prices(7))
+        self.assertEqual((rev, is_new), (7, True))
+        self.assertEqual(self.store.max_price_rev(), 7)
+
+    def test_same_rev_same_rates_is_not_new(self):
+        self.store.register_price_rev(self.prices(1))
+        self.assertEqual(self.store.register_price_rev(self.prices(1)), (1, False))
+
+    def test_same_rev_different_rates_is_refused(self):
+        """The one guard: a number must always mean the same rates."""
+        self.store.register_price_rev(self.prices(1, output=25.0))
+        with self.assertRaises(PriceRevConflict) as ctx:
+            self.store.register_price_rev(self.prices(1, output=30.0))
+        self.assertIn("rev 1", str(ctx.exception))
+
+    def test_bumping_the_rev_resolves_the_conflict(self):
+        self.store.register_price_rev(self.prices(1, output=25.0))
+        rev, is_new = self.store.register_price_rev(self.prices(2, output=30.0))
+        self.assertEqual((rev, is_new), (2, True))
+
+    def test_check_is_read_only(self):
+        """--dry-run must validate without recording anything."""
+        before = self.store.max_price_rev()
+        rev, is_new = self.store.check_price_rev(self.prices(9))
+        self.assertEqual((rev, is_new), (9, True))
+        self.assertEqual(self.store.max_price_rev(), before)
+
+    def test_revision_numbers_need_not_be_contiguous(self):
+        self.store.register_price_rev(self.prices(1))
+        self.store.register_price_rev(self.prices(50))
+        self.assertEqual(self.store.max_price_rev(), 50)
+
+
 class ScanStateTests(StoreTestCase):
     def test_pruned_file_is_flagged_but_rows_are_kept(self):
         """PLAN.md §13 invariant 5: a missing source file never removes a row."""
@@ -204,7 +305,7 @@ class SchemaTests(StoreTestCase):
     def test_init_schema_is_idempotent(self):
         self.store.init_schema()
         self.store.init_schema()
-        self.assertEqual(self.store.schema_version(), 1)
+        self.assertEqual(self.store.schema_version(), SCHEMA_VERSION)
 
     def test_every_table_has_audit_columns(self):
         q = self.store.con.execute
@@ -217,6 +318,44 @@ class SchemaTests(StoreTestCase):
                 continue
             self.assertIn("created_at", cols, f"{table} lacks created_at")
             self.assertIn("updated_at", cols, f"{table} lacks updated_at")
+
+    def test_migration_converges_with_a_fresh_schema(self):
+        """A migrated database and a fresh one must hold the same columns.
+
+        Order differs by design -- ALTER TABLE appends, schema.sql places the
+        column where it reads best -- and nothing depends on ordinal position
+        because every statement binds by name.
+        """
+        fresh = {r[1] for r in self.store.con.execute("PRAGMA table_info(usage_event)")}
+        d = tempfile.mkdtemp()
+        with Store(os.path.join(d, "old.db")) as old:
+            old.con.executescript(
+                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            old.init_schema()                      # creates v2 directly
+            old.con.execute("ALTER TABLE usage_event DROP COLUMN speed")
+            old.migrate()                          # must put it back
+            migrated = {r[1] for r in old.con.execute("PRAGMA table_info(usage_event)")}
+        self.assertEqual(fresh, migrated)
+        self.assertIn("speed", migrated)
+
+    def test_a_newer_database_is_refused(self):
+        """Older code must not quietly write to a schema it does not know.
+
+        Migrations are additive, so an old build would not crash -- it would
+        ignore unknown columns and write rows the newer schema treats as
+        incomplete. That silent damage is what the version number prevents.
+        """
+        self.store.con.execute("UPDATE meta SET value=? WHERE key='schema_version'",
+                               (str(SCHEMA_VERSION + 1),))
+        self.store.con.commit()
+        with self.assertRaises(SchemaTooNew):
+            self.store.init_schema()
+
+    def test_equal_or_older_version_opens_normally(self):
+        self.store.con.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+        self.store.con.commit()
+        self.store.init_schema()                       # migrates 1 -> current
+        self.assertEqual(self.store.schema_version(), SCHEMA_VERSION)
 
     def test_foreign_keys_are_enforced(self):
         with self.assertRaises(sqlite3.IntegrityError):

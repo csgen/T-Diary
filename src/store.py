@@ -14,11 +14,12 @@ overwrite a complete row with a partial one.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Used by the handful of statements that stamp a time from SQL rather than
 # relying on a column default. Same format as schema.sql: UTC, milliseconds.
@@ -39,7 +40,7 @@ def load_schema() -> str:
 INSERT_COLUMNS = (
     "message_id", "request_id", "source_id", "account_uuid", "session_ref",
     "project_id", "file_id", "git_branch", "entrypoint", "model", "effort",
-    "service_tier", "is_sidechain", "agent_id", "ts_utc", "local_date",
+    "service_tier", "speed", "is_sidechain", "agent_id", "ts_utc", "local_date",
     "local_hour", "iso_week", "month", "year",
     "input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens",
     "cache_write_5m_tokens", "cache_write_1h_tokens", "web_search_requests",
@@ -82,6 +83,19 @@ class UpsertResult:
         return self.inserted + self.revised + self.unchanged
 
 
+# Declarative migration list: (version, table, column, declaration, reason).
+# Both migrate() and pending_migrations() read it, so what gets applied and what
+# gets reported can never drift apart. Column additions only.
+COLUMN_MIGRATIONS = (
+    (2, "usage_event", "speed", "TEXT",
+     "fast mode prices Opus 5/4.8 at 2x standard; without it those rows under-cost"),
+)
+
+
+class SchemaTooNew(Exception):
+    """The database was written by a newer build than this one."""
+
+
 class Store:
     """Owns the database connection and every write to it."""
 
@@ -110,7 +124,70 @@ class Store:
 
     # -- schema ------------------------------------------------------------
 
-    def init_schema(self) -> None:
+    def stored_version(self) -> int:
+        """Schema version recorded in the database, or 0 if it predates `meta`."""
+        try:
+            row = self.con.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        except sqlite3.OperationalError:
+            return 0                       # meta table does not exist yet
+        return int(row["value"]) if row else 0
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> bool:
+        """Add a column if absent. Idempotent, so a fresh database created from
+        schema.sql and an older one being migrated converge on the same shape."""
+        cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
+        if column in cols:
+            return False
+        self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        return True
+
+    def pending_migrations(self) -> list[str]:
+        """What migrate() would do, without doing it.
+
+        Read-only, so a migration on a database holding irreplaceable history
+        can be inspected before it is applied.
+        """
+        pending = []
+        for version, table, column, _decl, reason in COLUMN_MIGRATIONS:
+            cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                pending.append(f"v{version}: add {table}.{column} -- {reason}")
+        return pending
+
+    def migrate(self) -> list[str]:
+        """Bring an existing database up to SCHEMA_VERSION. Additive only --
+        no migration may drop or rewrite a column that holds usage data."""
+        applied = []
+        for version, table, column, decl, reason in COLUMN_MIGRATIONS:
+            if self._ensure_column(table, column, decl):
+                applied.append(f"v{version}: add {table}.{column} -- {reason}")
+        self.con.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
+        self.con.commit()
+        return applied
+
+    def init_schema(self) -> list[str]:
+        """Create or migrate the schema. Returns the migrations applied, if any.
+
+        The return value is not decoration: a schema change to the database
+        holding the only surviving copy of pruned history should never happen
+        silently. Callers are expected to report it.
+        """
+        # The one job only a version number can do: refuse a database written by
+        # newer code. Migrations are additive, so older code would not crash --
+        # it would quietly ignore columns it does not know and write rows the
+        # newer schema considers incomplete. Failing loudly is the whole point.
+        found = self.stored_version()
+        if found > SCHEMA_VERSION:
+            raise SchemaTooNew(
+                f"{self.db_path} was written by a newer tokenDiary "
+                f"(schema v{found}); this build understands v{SCHEMA_VERSION}. "
+                f"Update the code, or point --config at a different data directory."
+            )
         self.con.executescript(load_schema())
         self.con.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
@@ -118,6 +195,7 @@ class Store:
             (str(SCHEMA_VERSION),),
         )
         self.con.commit()
+        return self.migrate()
 
     def schema_version(self) -> int:
         row = self.con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -288,6 +366,113 @@ class Store:
                 for r in self.con.execute("SELECT source_id, account_uuid FROM dim_source")
             }
         return self._acct_cache
+
+    # -- pricing -----------------------------------------------------------
+
+    def check_price_rev(self, prices) -> tuple[int, bool]:
+        """Validate the declared revision against what is stored.
+
+        Returns (rev, is_new). Read-only -- registration is a separate step, so
+        `--dry-run` can validate without writing.
+
+        The revision number is whatever `prices.json` declares. The only thing
+        enforced is that a given number always means the same rates: if rev 3
+        is already stored and the file's rates differ from that snapshot, the
+        costs recorded under rev 3 would no longer be explained by the snapshot
+        behind them.
+        """
+        from .price import PriceRevConflict, semantic_hash
+
+        row = self.con.execute(
+            "SELECT rev, prices_json FROM price_rev WHERE rev=?", (prices.rev,)
+        ).fetchone()
+        if row is None:
+            return prices.rev, True
+
+        try:
+            stored_hash = semantic_hash(json.loads(row["prices_json"]))
+        except ValueError:
+            stored_hash = None
+        if stored_hash is not None and stored_hash != prices.content_hash:
+            raise PriceRevConflict(
+                f'{prices.path}: rev {prices.rev} is already recorded with different '
+                f"rates. Bump \"rev\" to {self.max_price_rev() + 1} so the change gets "
+                f"its own revision, then run `recost --dry-run` to see what it would "
+                f"do to stored costs."
+            )
+        return prices.rev, False
+
+    def max_price_rev(self) -> int:
+        row = self.con.execute("SELECT COALESCE(MAX(rev), 0) m FROM price_rev").fetchone()
+        return row["m"]
+
+    def register_price_rev(self, prices) -> tuple[int, bool]:
+        """Validate, then store the declared revision if it is not yet known."""
+        rev, is_new = self.check_price_rev(prices)
+        if is_new:
+            self.con.execute(
+                f"INSERT INTO price_rev(rev, applied_at, content_hash, prices_json, note) "
+                f"VALUES (?, {NOW_SQL}, ?, ?, ?)",
+                (rev, prices.content_hash, prices.raw, f"declared in {prices.path}"),
+            )
+            self.con.commit()
+        return rev, is_new
+
+    def set_cost(self, message_id: str, cost: float | None,
+                 breakdown: str | None, rev: int | None) -> None:
+        self.con.execute(
+            "UPDATE usage_event SET cost_usd=?, cost_breakdown_json=?, price_rev=? "
+            "WHERE message_id=?",
+            (cost, breakdown, rev, message_id),
+        )
+
+    def uncosted(self):
+        """Rows that have never been costed.
+
+        Deliberately NOT "rows whose price_rev differs from the current one":
+        ingest must price new rows and touch nothing else. Re-pricing already
+        costed rows is `recost`'s job alone, so that editing prices.json can
+        never quietly rewrite history through a routine scan (PLAN.md D6).
+        """
+        return self.con.execute(
+            "SELECT * FROM usage_event WHERE price_rev IS NULL").fetchall()
+
+    def rows_on_other_revs(self, rev: int) -> list[dict]:
+        """Costed rows priced under some revision other than `rev`.
+
+        Not an error -- a stored cost is meant to be stable. Surfaced so the
+        drift is visible and `recost` is a deliberate choice.
+        """
+        return [dict(r) for r in self.con.execute(
+            "SELECT price_rev, COUNT(*) n FROM usage_event "
+            "WHERE price_rev IS NOT NULL AND price_rev != ? GROUP BY price_rev",
+            (rev,))]
+
+    def priced_between(self, since: str | None = None, model: str | None = None):
+        sql = "SELECT * FROM usage_event WHERE 1=1"
+        params: dict = {}
+        if since:
+            sql += " AND local_date >= :since"
+            params["since"] = since
+        if model:
+            sql += " AND model = :model"
+            params["model"] = model
+        return self.con.execute(sql, params).fetchall()
+
+    def cost_by_month(self, since: str | None = None) -> list[dict]:
+        sql = ("SELECT month, COUNT(*) n, SUM(cost_usd) cost, "
+               "SUM(cost_usd IS NULL) unpriced FROM usage_event")
+        params: tuple = ()
+        if since:
+            sql += " WHERE local_date >= ?"
+            params = (since,)
+        sql += " GROUP BY month ORDER BY month"
+        return [dict(r) for r in self.con.execute(sql, params)]
+
+    def unknown_models(self) -> list[dict]:
+        return [dict(r) for r in self.con.execute(
+            "SELECT model, COUNT(*) n FROM usage_event WHERE cost_usd IS NULL "
+            "GROUP BY model ORDER BY n DESC")]
 
     # -- scan state --------------------------------------------------------
 
