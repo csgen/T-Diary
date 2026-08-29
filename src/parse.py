@@ -1,9 +1,9 @@
-"""Stage 3: JSONL -> usage records, deduplicated by message_id (PLAN.md §6.3).
+"""JSONL -> usage records, deduplicated by message_id.
 
 One API call is written as several lines, one per content block, each repeating
-the same cumulative `usage`. Counting per line overcounts by ~2.3x. Lines are
-therefore grouped by message.id and the largest observed output_tokens wins --
-early lines in a group carry partial counts from mid-stream.
+the same cumulative `usage`. Lines are therefore grouped by message.id and the
+largest observed output_tokens wins -- early lines in a group carry partial counts
+from mid-stream.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 
 USAGE_MARKER = b'"usage"'
 SYNTHETIC_MODEL = "<synthetic>"
@@ -39,6 +38,7 @@ class UsageRecord:
     iso_week: str
     month: str
     year: int
+    tz_offset_minutes: int
     input_tokens: int
     output_tokens: int
     thinking_tokens: int
@@ -72,31 +72,11 @@ class ParseResult:
     stats: ParseStats = field(default_factory=ParseStats)
 
 
-def _derive_time(ts: str, tz) -> tuple[str, int, str, str, int]:
-    """UTC timestamp string -> (local_date, local_hour, iso_week, month, year).
-
-    The JSONL only ever carries UTC. Local time is computed, never read
-    (PLAN.md D8). 2.5% of events land on a different calendar day once shifted.
-    """
-    utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    if utc.tzinfo is None:
-        utc = utc.replace(tzinfo=timezone.utc)
-    local = utc.astimezone(tz)
-    iso = local.isocalendar()
-    return (
-        local.strftime("%Y-%m-%d"),
-        local.hour,
-        f"{iso[0]}-W{iso[1]:02d}",
-        local.strftime("%Y-%m"),
-        local.year,
-    )
-
-
 def parse_file(
     path: str,
     source_id: str,
     rel_path: str,
-    tz,
+    clock,
     start_offset: int = 0,
 ) -> ParseResult:
     """Parse a JSONL file from `start_offset`, returning deduplicated records.
@@ -156,7 +136,9 @@ def parse_file(
                 stats.skipped_no_timestamp += 1
                 continue
             try:
-                local_date, local_hour, iso_week, month, year = _derive_time(ts, tz)
+                # `clock` turns the JSONL's bare UTC into local time -- either a
+                # FixedOffset or the recorded TimezoneHistory (src/tz.py).
+                t = clock.derive(ts)
             except ValueError:
                 stats.skipped_no_timestamp += 1
                 continue
@@ -190,11 +172,12 @@ def parse_file(
                     is_sidechain=1 if obj.get("isSidechain") else 0,
                     agent_id=obj.get("agentId"),
                     ts_utc=ts,
-                    local_date=local_date,
-                    local_hour=local_hour,
-                    iso_week=iso_week,
-                    month=month,
-                    year=year,
+                    local_date=t["local_date"],
+                    local_hour=t["local_hour"],
+                    iso_week=t["iso_week"],
+                    month=t["month"],
+                    year=t["year"],
+                    tz_offset_minutes=t["tz_offset_minutes"],
                     input_tokens=int(usage.get("input_tokens") or 0),
                     output_tokens=out_tokens,
                     thinking_tokens=int(details.get("thinking_tokens") or 0),

@@ -1,4 +1,4 @@
-"""SQLite storage: schema, dimensions, and the monotone upsert (PLAN.md §5, §6.4).
+"""SQLite storage: schema, dimensions, and the monotone upsert.
 
 The invariant this module exists to protect: a day's totals never decrease, and
 the result does not depend on when or how often a scan runs. Two rules enforce
@@ -6,7 +6,7 @@ it, and both are load-bearing.
 
   * `message_id` is the primary key, so re-reading a file is a no-op.
   * Token counts update ONLY when the new value is strictly greater, because a
-    scan landing mid-stream sees partial counts (2.1% of real calls).
+    scan landing mid-stream sees partial counts.
 
 `INSERT OR REPLACE` is forbidden anywhere in this file -- it would silently
 overwrite a complete row with a partial one.
@@ -19,7 +19,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Used by the handful of statements that stamp a time from SQL rather than
 # relying on a column default. Same format as schema.sql: UTC, milliseconds.
@@ -41,7 +41,7 @@ INSERT_COLUMNS = (
     "message_id", "request_id", "source_id", "account_uuid", "session_ref",
     "project_id", "file_id", "git_branch", "entrypoint", "model", "effort",
     "service_tier", "speed", "is_sidechain", "agent_id", "ts_utc", "local_date",
-    "local_hour", "iso_week", "month", "year",
+    "local_hour", "iso_week", "month", "year", "tz_offset_minutes",
     "input_tokens", "output_tokens", "thinking_tokens", "cache_read_tokens",
     "cache_write_5m_tokens", "cache_write_1h_tokens", "web_search_requests",
     "web_fetch_requests", "batch_id", "last_batch_id",
@@ -89,6 +89,8 @@ class UpsertResult:
 COLUMN_MIGRATIONS = (
     (2, "usage_event", "speed", "TEXT",
      "fast mode prices Opus 5/4.8 at 2x standard; without it those rows under-cost"),
+    (3, "usage_event", "tz_offset_minutes", "INTEGER",
+     "records which offset produced this row's local_date, so a date is self-explaining"),
 )
 
 
@@ -473,6 +475,26 @@ class Store:
         return [dict(r) for r in self.con.execute(
             "SELECT model, COUNT(*) n FROM usage_event WHERE cost_usd IS NULL "
             "GROUP BY model ORDER BY n DESC")]
+
+    # -- derived dates -----------------------------------------------------
+
+    def all_ts(self) -> list[dict]:
+        """Every row's immutable ts_utc plus its currently derived date fields.
+
+        `rebuild-dates` re-derives from ts_utc alone, so this is the only input
+        it needs from the database.
+        """
+        return [dict(r) for r in self.con.execute(
+            "SELECT message_id, ts_utc, local_date, local_hour, iso_week, month, "
+            "year, tz_offset_minutes FROM usage_event ORDER BY ts_utc")]
+
+    def set_dates(self, message_id: str, fields: dict) -> None:
+        self.con.execute(
+            "UPDATE usage_event SET local_date=:local_date, local_hour=:local_hour, "
+            "iso_week=:iso_week, month=:month, year=:year, "
+            "tz_offset_minutes=:tz_offset_minutes WHERE message_id=:message_id",
+            {**fields, "message_id": message_id},
+        )
 
     # -- scan state --------------------------------------------------------
 

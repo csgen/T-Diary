@@ -16,8 +16,9 @@ from datetime import timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.parse import UsageRecord, is_mirror, merge_records, parse_file  # noqa: E402
+from src.tz import FixedOffset  # noqa: E402
 
-TZ8 = timezone(timedelta(hours=8))
+TZ8 = FixedOffset(8 * 60)
 
 
 def line(msg_id, out, ts="2026-06-29T08:00:00.000Z", model="claude-opus-5", **extra):
@@ -125,7 +126,7 @@ class ParseFileTests(unittest.TestCase):
         )
 
     def test_utc_to_local_day_boundary(self):
-        """16:21 UTC is the next calendar day at UTC+8 -- 2.5% of real events."""
+        """16:21 UTC is the next calendar day at UTC+8."""
         rec = self.parse(line("msg_a", 5, ts="2026-06-29T16:21:37.893Z")).records[0]
         self.assertEqual(rec.ts_utc, "2026-06-29T16:21:37.893Z")   # stored verbatim
         self.assertEqual(rec.local_date, "2026-06-30")
@@ -158,7 +159,8 @@ class MergeTests(unittest.TestCase):
             speed=None,
             is_sidechain=0, agent_id=None, ts_utc="2026-08-11T09:26:47.000Z",
             local_date="2026-08-11", local_hour=17, iso_week="2026-W33",
-            month="2026-08", year=2026, input_tokens=1, output_tokens=out,
+            month="2026-08", year=2026, tz_offset_minutes=480,
+            input_tokens=1, output_tokens=out,
             thinking_tokens=0, cache_read_tokens=0, cache_write_5m_tokens=0,
             cache_write_1h_tokens=0, web_search_requests=0, web_fetch_requests=0,
         )

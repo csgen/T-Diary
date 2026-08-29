@@ -1,7 +1,7 @@
 -- tokenDiary schema (PLAN.md §5).
 --
 -- Conventions:
---   * every table carries created_at / updated_at in UTC (PLAN.md §5.0);
+--   * every table carries created_at / updated_at in UTC;
 --     they are DIFFERENT from local_date / local_hour, which are UTC+8
 --   * updated_at is maintained by trigger so no call site can forget it
 --   * usage_event is keyed by message_id: one API call, one row
@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS usage_event (
   iso_week       TEXT NOT NULL,
   month          TEXT NOT NULL,
   year           INTEGER NOT NULL,
+  tz_offset_minutes INTEGER,
 
   input_tokens          INTEGER NOT NULL DEFAULT 0,
   output_tokens         INTEGER NOT NULL DEFAULT 0,

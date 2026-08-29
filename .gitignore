@@ -4,3 +4,4 @@ data/
 web/data.json
 .env
 PLAN.md
+timezone.json
