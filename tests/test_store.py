@@ -39,7 +39,8 @@ def rec(mid="msg_a", out=100, source_id="host", **kw):
         speed="standard",
         is_sidechain=0, agent_id=None, ts_utc="2026-06-29T08:00:00.000Z",
         local_date="2026-06-29", local_hour=16, iso_week="2026-W27",
-        month="2026-06", year=2026, input_tokens=10, output_tokens=out,
+        month="2026-06", year=2026, tz_offset_minutes=480,
+        input_tokens=10, output_tokens=out,
         thinking_tokens=1, cache_read_tokens=500, cache_write_5m_tokens=20,
         cache_write_1h_tokens=40, web_search_requests=0, web_fetch_requests=0,
     )

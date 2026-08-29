@@ -20,6 +20,8 @@ from .price import PriceError, PriceRevConflict, compute_cost, load_prices
 from .scan import (SourceUnavailable, detect_deleted, head_bytes, head_sha256,
                    plan_read, select_candidates, sweep)
 from .store import SCHEMA_VERSION, SchemaTooNew, Store
+from .tz import (TimezoneError, append_if_changed, load_history,
+                 machine_offset, save_history)
 
 
 BYTES_PER_MB = 1024 * 1024      # mebibyte, matching how OS file managers report size
@@ -32,7 +34,9 @@ def _fmt_mb(n: int) -> str:
 
 def cmd_scan(args) -> int:
     cfg = load_config(args.config)
-    print(f"config: {cfg.root_dir}/config.toml   tz=UTC{cfg.timezone_offset_hours:+d}")
+    clock = load_history(cfg.root_dir, cfg.timezone_offset_hours * 60)
+    print(f"config: {cfg.root_dir}/config.toml   tz={clock.current.label}"
+          f"  ({len(clock.periods)} period(s))")
 
     grand_total: dict[str, object] = {}
     all_records = []
@@ -73,7 +77,7 @@ def cmd_scan(args) -> int:
         t0 = time.perf_counter()
         records, lines, usage_lines, collapsed, torn = [], 0, 0, 0, 0
         for st in stats:
-            res = parse_file(st.path, source.id, st.rel_path, cfg.tz)
+            res = parse_file(st.path, source.id, st.rel_path, clock)
             records.extend(res.records)
             lines += res.stats.lines_read
             usage_lines += res.stats.usage_lines
@@ -149,6 +153,15 @@ def cmd_ingest(args) -> int:
         )
         print(f"batch {batch_id}  db={cfg.db_path}")
 
+        # timezone.json is the sole input to date derivation. A scan records a
+        # new period when the machine offset has moved -- travel or DST.
+        history = load_history(cfg.root_dir, cfg.timezone_offset_hours * 60)
+        appended = append_if_changed(history)
+        if appended:
+            print(f"  timezone changed to {appended.label} ({appended.tz_name}); "
+                  f"recorded from {appended.from_utc[:19]}Z")
+            print(f"  run `rebuild-dates --dry-run` to see the effect on stored rows")
+
         all_records, ok_sources, failures = [], [], 0
 
         for source in targets:
@@ -185,7 +198,7 @@ def cmd_ingest(args) -> int:
                 if plan.mode == "skip":
                     continue
 
-                res = parse_file(st.path, source.id, st.rel_path, cfg.tz,
+                res = parse_file(st.path, source.id, st.rel_path, history,
                                  start_offset=plan.start_offset)
                 records.extend(res.records)
                 torn += 1 if res.stats.torn_tail else 0
@@ -253,7 +266,7 @@ def cmd_ingest(args) -> int:
                 print(f"  recorded price revision {rev} (declared in prices.json)")
             priced = unpriced = 0
             for row in store.uncosted():
-                rates = prices.resolve(row["model"], row["local_date"], row["speed"])
+                rates = prices.resolve(row["model"], row["ts_utc"][:10], row["speed"])
                 if rates is None:
                     store.set_cost(row["message_id"], None, None, None)
                     unpriced += 1
@@ -346,7 +359,7 @@ def cmd_recost(args) -> int:
 
         changes, unknown, delta_by_month = [], 0, {}
         for row in rows:
-            rates = prices.resolve(row["model"], row["local_date"], row["speed"])
+            rates = prices.resolve(row["model"], row["ts_utc"][:10], row["speed"])
             if rates is None:
                 unknown += 1
                 continue
@@ -428,6 +441,91 @@ def cmd_migrate(args) -> int:
     return 0
 
 
+def cmd_rebuild_dates(args) -> int:
+    """Re-derive every row's local date from ts_utc and timezone.json.
+
+    ts_utc is stored verbatim and never changes, so this is a pure
+    re-derivation: correct a period in timezone.json, run this, and the whole
+    history follows. It touches only the derived time columns.
+    """
+    cfg = load_config(args.config)
+    if not os.path.exists(cfg.db_path):
+        print(f"no database at {cfg.db_path}", file=sys.stderr)
+        return 2
+
+    history = load_history(cfg.root_dir, cfg.timezone_offset_hours * 60)
+    print(f"timezone.json: {len(history.periods)} period(s)")
+    for p in history.periods:
+        print(f"  {p.from_utc[:19]}Z  {p.label:>8}  {p.origin:<7} {p.tz_name}")
+    print()
+
+    with Store(cfg.db_path) as store:
+        rows = store.all_ts()
+        moved, filled, changes = {}, 0, []
+        for row in rows:
+            fields = history.derive(row["ts_utc"])
+            date_moved = fields["local_date"] != row["local_date"]
+            offset_moved = fields["tz_offset_minutes"] != row["tz_offset_minutes"]
+            if not date_moved and not offset_moved:
+                continue
+            changes.append((row["message_id"], fields))
+            if date_moved:
+                moved.setdefault((row["local_date"], fields["local_date"]), 0)
+                moved[(row["local_date"], fields["local_date"])] += 1
+            elif row["tz_offset_minutes"] is None:
+                filled += 1
+
+        print(f"{len(rows):,} row(s) examined")
+        print(f"  {sum(moved.values()):,} would move to a different local_date")
+        print(f"  {filled:,} keep their date and only gain the recorded offset")
+        for (old, new), n in sorted(moved.items())[:12]:
+            print(f"    {old} -> {new}   {n:,} rows")
+        if len(moved) > 12:
+            print(f"    ... and {len(moved) - 12} more day pairs")
+
+        if args.dry_run:
+            print("\ndry run: nothing written")
+            return 0
+        if not changes:
+            print("\nnothing to do")
+            return 0
+        for message_id, fields in changes:
+            store.set_dates(message_id, fields)
+        store.con.commit()
+        print(f"\nupdated {len(changes):,} row(s)")
+    return 0
+
+
+def cmd_tz(args) -> int:
+    """Show the recorded offset history, or correct its most recent entry."""
+    cfg = load_config(args.config)
+    history = load_history(cfg.root_dir, cfg.timezone_offset_hours * 60)
+    machine, name = machine_offset()
+
+    if args.set_offset is not None:
+        # Correcting a boundary a scan placed late: edit the newest period
+        # rather than appending, and mark it manual so a later scan leaves it be.
+        period = history.current
+        period.offset_minutes = args.set_offset
+        period.origin = "manual"
+        if args.set_from:
+            period.from_utc = args.set_from
+        save_history(history)
+        print(f"updated the newest period to {period.label} from {period.from_utc[:19]}Z")
+        print("run `rebuild-dates --dry-run` to see the effect on stored rows")
+        return 0
+
+    print(f"{history.path}")
+    print(f"machine now: {machine} min ({name})\n")
+    print(f"  {'from (UTC)':<22} {'offset':>8}  {'origin':<7} name")
+    for p in history.periods:
+        print(f"  {p.from_utc[:19] + 'Z':<22} {p.label:>8}  {p.origin:<7} {p.tz_name}")
+    if history.current.offset_minutes != machine:
+        print(f"\n  note: the machine now reports {machine} min, which differs from the"
+              f" newest period. The next `ingest` will record the change.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -458,6 +556,19 @@ def build_parser() -> argparse.ArgumentParser:
     mg.add_argument("--check", action="store_true",
                     help="report what is pending without applying it")
     mg.set_defaults(func=cmd_migrate)
+
+    rb = sub.add_parser("rebuild-dates",
+                        help="re-derive local dates from ts_utc and timezone.json")
+    rb.add_argument("--dry-run", action="store_true",
+                    help="report what would change without writing")
+    rb.set_defaults(func=cmd_rebuild_dates)
+
+    tzp = sub.add_parser("tz", help="show or correct the recorded offset history")
+    tzp.add_argument("--set-offset", type=int, metavar="MINUTES",
+                     help="correct the newest period's offset, in minutes")
+    tzp.add_argument("--set-from", metavar="UTC_TS",
+                     help="also move the newest period's start, e.g. 2026-09-15T12:00:00Z")
+    tzp.set_defaults(func=cmd_tz)
     return p
 
 
@@ -474,6 +585,9 @@ def main(argv: list[str] | None = None) -> int:
     except PriceError as exc:
         print(f"price error: {exc}", file=sys.stderr)
         return 4
+    except TimezoneError as exc:
+        print(f"timezone error: {exc}", file=sys.stderr)
+        return 5
 
 
 if __name__ == "__main__":
