@@ -9,8 +9,8 @@ Editing prices.json never rewrites history. Cost is computed once at ingest and
 frozen into the row; only an explicit `recost` changes it, and the superseded
 revision's full snapshot is retained so "why did June change?" stays answerable.
 
-Cost here is NOTIONAL -- what the usage would have cost at API list rates. Both
-tracked accounts are subscription-billed, so it is an intensity metric.
+Cost here is NOTIONAL -- what the usage would have cost at API list rates. Our
+tracked accounts are typically subscription-billed, so it is an intensity metric.
 """
 
 from __future__ import annotations
