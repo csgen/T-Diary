@@ -133,6 +133,13 @@ def select_candidates(
             reason = "new"
         elif st.size != prev.get("size"):
             reason = "size"
+        elif st.mtime != prev.get("mtime"):
+            # Any change to the recorded mtime, in either direction. The
+            # watermark test below only catches mtime moving FORWARD; a
+            # backwards jump -- clock skew between hosts, an NTP correction, a
+            # restore from backup -- would otherwise be invisible whenever the
+            # size happened to be unchanged.
+            reason = "mtime"
         elif cutoff is None or st.mtime > cutoff:
             reason = "mtime"
         elif hot:
@@ -151,6 +158,76 @@ def detect_deleted(stats: list[FileStat], state: dict[str, dict]) -> list[str]:
     """
     seen = {s.path for s in stats}
     return [p for p, row in state.items() if p not in seen and not row.get("deleted_at")]
+
+
+def head_bytes(byte_offset: int) -> int:
+    """How many leading bytes the head hash covers for a given offset.
+
+    Never more than what has already been consumed. Hashing a fixed 4 KB of
+    "the file as it is now" would include freshly appended bytes on any file
+    smaller than that, making every ordinary append look like a rewritten
+    prefix and forcing a needless full reparse.
+    """
+    return min(HEAD_BYTES, max(0, byte_offset))
+
+
+@dataclass(slots=True)
+class ReadPlan:
+    """How to read one candidate file, and why."""
+
+    mode: str            # 'skip' | 'resume' | 'full'
+    start_offset: int
+    reason: str          # 'new' | 'forced' | 'hot' | 'unchanged' | 'shrunk'
+                         # | 'head-mismatch' | 'anchor-mismatch' | 'resume'
+
+    @property
+    def is_reset(self) -> bool:
+        """A fast path was available and failed verification."""
+        return self.reason in ("shrunk", "head-mismatch", "anchor-mismatch")
+
+
+def plan_read(cand: Candidate, prev: dict | None) -> ReadPlan:
+    """Decide how to read a candidate file (PLAN.md §6.2).
+
+    Every branch fails safe: anything unverifiable falls back to a full reparse,
+    which is always correct because `message_id` is the primary key. The offset
+    is an optimization, never a correctness dependency (D4).
+    """
+    st = cand.file
+
+    if cand.reason == "full":
+        return ReadPlan("full", 0, "forced")
+    if prev is None:
+        return ReadPlan("full", 0, "new")
+    if cand.hot:
+        # The file being appended to today is the one whose prefix might still
+        # be rewritten by compaction, so its offset is never trusted.
+        return ReadPlan("full", 0, "hot")
+
+    if st.size == prev.get("size") and st.mtime == prev.get("mtime"):
+        return ReadPlan("skip", 0, "unchanged")
+
+    offset = prev.get("byte_offset") or 0
+    if offset <= 0:
+        return ReadPlan("full", 0, "new")
+    if st.size < offset:
+        # Truncated or rewritten: the bookmark now points past the end.
+        return ReadPlan("full", 0, "shrunk")
+
+    # A compact-then-continue leaves the file LARGER, so size alone cannot
+    # catch it. Verify that the bytes we already consumed are still the ones
+    # we think they are.
+    stored_head = prev.get("head_sha256")
+    if stored_head and head_sha256(st.path, head_bytes(offset)) != stored_head:
+        return ReadPlan("full", 0, "head-mismatch")
+
+    stored_anchor = prev.get("anchor_sha256")
+    if stored_anchor:
+        anchor = read_anchor(st.path, offset, prev.get("anchor_len") or 0)
+        if anchor is None or hashlib.sha256(anchor).hexdigest() != stored_anchor:
+            return ReadPlan("full", 0, "anchor-mismatch")
+
+    return ReadPlan("resume", offset, "resume")
 
 
 def head_sha256(path: str, nbytes: int = HEAD_BYTES) -> str:

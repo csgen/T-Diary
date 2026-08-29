@@ -7,7 +7,7 @@
     "retrieved": "2026-08-28",
     "note": [
       "These are Anthropic first-party API list prices. tokenDiary reports NOTIONAL cost:",
-      "what this usage would have cost at API rates. Both tracked accounts are",
+      "what this usage would have cost at API rates. Our tracked accounts are",
       "subscription-billed, so this is an intensity metric.",
       "",
       "Cache multipliers relative to base input, per the published table:",
