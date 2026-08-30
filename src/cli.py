@@ -10,6 +10,7 @@ import argparse
 import datetime
 import json
 import os
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -18,6 +19,7 @@ from . import export as export_mod
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
 from .price import PriceError, PriceRevConflict, compute_cost, load_prices
+from .runlog import tee_to_log
 from .scan import (SourceUnavailable, detect_deleted, head_bytes, head_sha256,
                    plan_read, select_candidates, sweep)
 from .store import SCHEMA_VERSION, SchemaTooNew, Store
@@ -555,6 +557,89 @@ def cmd_export(args) -> int:
     return 0
 
 
+# Exit codes at or above this mean nothing reached the database -- a config,
+# schema, price, timezone or lock failure. Exporting after one of those would
+# rewrite an identical file from a database the run never touched.
+INGEST_HARD_FAILURE = 2
+
+
+def _is_locked(exc: sqlite3.OperationalError) -> bool:
+    """SQLite reports contention in the message, not as a distinct type."""
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def dispatch(args) -> int:
+    """Run one command, mapping every known failure to its exit code (PLAN 10).
+
+    Separate from main() so `run` can invoke ingest and export through the
+    same mapping, and have their failures land in the log rather than as a
+    traceback on a stderr nobody is reading.
+    """
+    try:
+        return args.func(args)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+    except SchemaTooNew as exc:
+        print(f"schema error: {exc}", file=sys.stderr)
+        return 3
+    except PriceError as exc:
+        print(f"price error: {exc}", file=sys.stderr)
+        return 4
+    except TimezoneError as exc:
+        print(f"timezone error: {exc}", file=sys.stderr)
+        return 5
+    except sqlite3.OperationalError as exc:
+        if not _is_locked(exc):
+            raise
+        # Task Scheduler's per-task "do not start a new instance" rule cannot
+        # see across tasks, so the daily, at-logon and weekly --full entries
+        # can still overlap each other or a manual run. Nothing was committed
+        # and the watermark advances only on success, so skipping is safe:
+        # the next run picks up everything this one would have.
+        print("another tokendiary run holds the database; this run did nothing",
+              file=sys.stderr)
+        return 6
+
+
+def _project_root(args) -> str:
+    """Where the log goes -- resolvable even when config loading fails.
+
+    A broken .env is exactly the kind of failure that shows up at 3am, and it
+    has to be readable in the log rather than only in an exit code.
+    """
+    try:
+        return load_config(args.config).root_dir
+    except ConfigError:
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def cmd_run(args) -> int:
+    """ingest, then export -- the single verb a scheduled task invokes.
+
+    exit 1 means one source was unavailable *and the others ingested new
+    data*, so stopping there freezes the dashboard on exactly the days it has
+    something new to show. Export runs unless ingest failed hard.
+    """
+    root = _project_root(args)
+    label = "run --full" if args.full else "run"
+    with tee_to_log(root, label) as path:
+        code = dispatch(argparse.Namespace(
+            config=args.config, full=args.full, source=None,
+            dry_run=False, func=cmd_ingest))
+        if code >= INGEST_HARD_FAILURE:
+            print(f"\nexport skipped: ingest exited {code}, so nothing was written",
+                  file=sys.stderr)
+        else:
+            code = max(code, dispatch(argparse.Namespace(
+                config=args.config, out=None, func=cmd_export)))
+        print(f"\nrun finished: exit {code}")
+    if code:
+        print(f"see {path}", file=sys.stderr)
+    return code
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -602,25 +687,16 @@ def build_parser() -> argparse.ArgumentParser:
     ex = sub.add_parser("export", help="write web/data.json for the dashboard")
     ex.add_argument("--out", help="output path (default web/data.json)")
     ex.set_defaults(func=cmd_export)
+
+    rn = sub.add_parser("run", help="ingest then export; the scheduled entry point")
+    rn.add_argument("--full", action="store_true",
+                    help="ignore scan state; reparse everything")
+    rn.set_defaults(func=cmd_run)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        return args.func(args)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        return 2
-    except SchemaTooNew as exc:
-        print(f"schema error: {exc}", file=sys.stderr)
-        return 3
-    except PriceError as exc:
-        print(f"price error: {exc}", file=sys.stderr)
-        return 4
-    except TimezoneError as exc:
-        print(f"timezone error: {exc}", file=sys.stderr)
-        return 5
+    return dispatch(build_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

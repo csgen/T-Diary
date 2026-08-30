@@ -1,8 +1,6 @@
 """Configuration loading, path normalization, and account resolution.
 
-Paths are normalized to forward slashes everywhere in tokenDiary. Backslash UNC
-paths to WSL read unreliably from Python on this machine, and mixing styles makes 
-scan_state keys inconsistent between runs.
+Paths are normalized to forward slashes everywhere in tokenDiary.
 """
 
 from __future__ import annotations
