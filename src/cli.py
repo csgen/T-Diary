@@ -541,6 +541,8 @@ def cmd_export(args) -> int:
 
     meta, cov = payload["meta"], payload["meta"]["coverage"]
     print(f"wrote {out}  ({size / 1024:.0f} KB)")
+    print(f"  stamped {meta['generated_at']}  "
+          f"-- the dashboard header shows this; if it differs, the page is cached")
     print(f"  {cov['calls']:,} calls over {cov['active_days']} active days"
           f"   {cov['first']} .. {cov['last']}")
     print(f"  {len(payload['daily']):,} daily rows  "

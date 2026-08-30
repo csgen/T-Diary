@@ -538,7 +538,12 @@ function boot(data) {
   renderAll();
 }
 
-fetch("data.json")
+// `cache: "no-store"` is load-bearing, not defensive. Python's http.server sends
+// Last-Modified with no Cache-Control, and a response with no explicit freshness
+// directive may be cached heuristically -- so after `export` rewrote data.json the
+// page would keep rendering the previous run's numbers, with no sign anything was
+// stale except the "updated ..." stamp in the header.
+fetch("data.json", { cache: "no-store" })
   .then((r) => r.json())
   .then(boot)
   .catch(() => {
