@@ -1,6 +1,6 @@
 """SQLite -> web/data.json, the file the static dashboard reads.
 
-The dashboard is a plain HTML page opened over file://, so it cannot query
+The dashboard is a plain HTML page without backend, so it cannot query
 SQLite. This step hands it everything pre-aggregated.
 
 Grain is date x source x model x sidechain -- fine enough for every filter the
@@ -69,7 +69,7 @@ def build(store, cfg) -> dict:
     last_batch = q("SELECT MAX(finished_at) t FROM ingest_batch").fetchone()["t"]
 
     # "Today" in the user's own timezone, so the dashboard can mark the current
-    # day provisional -- it can still tick upward until sessions close (D3).
+    # day provisional -- it can still tick upward until sessions close.
     now_local = datetime.datetime.now(cfg.tz)
 
     return {

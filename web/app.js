@@ -158,6 +158,46 @@ function costOf(r, key) {
   return sum ? (parts[key] / sum) * r.cost : 0;
 }
 
+/* ---------- theme ---------- */
+/** What the page is actually showing right now: an explicit choice if one has
+ *  been made, otherwise whatever the OS asked for. */
+function effectiveTheme() {
+  const explicit = document.documentElement.getAttribute("data-theme");
+  if (explicit === "dark" || explicit === "light") return explicit;
+  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+/** Label the button for what a click will DO, from what is on screen now. */
+function syncThemeButton() {
+  const b = el("theme");
+  if (!b) return;
+  const showing = effectiveTheme();
+  b.textContent = showing === "dark" ? "☀" : "☾";
+  b.setAttribute("aria-label", `Switch to ${showing === "dark" ? "light" : "dark"} mode`);
+  b.title = b.getAttribute("aria-label");
+}
+
+/** Record an explicit choice. Only ever called from a click. */
+function applyTheme(mode) {
+  document.documentElement.setAttribute("data-theme", mode);
+  try { localStorage.setItem("tokendiary-theme", mode); } catch (e) { /* private mode */ }
+  syncThemeButton();
+}
+
+function restoreTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("tokendiary-theme"); } catch (e) { /* private mode */ }
+  if (saved === "dark" || saved === "light") {
+    applyTheme(saved);
+  } else {
+    // Nothing chosen yet: leave the attribute off so the page keeps following
+    // the OS, and keep the label in step if the OS flips while the page is open.
+    syncThemeButton();
+    matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", () => { syncThemeButton(); renderAll(); });
+  }
+}
+
 /* ---------- tooltip ---------- */
 const tip = () => el("tip");
 function showTip(evt, html) {
@@ -469,6 +509,8 @@ function boot(data) {
     `${data.meta.cost_note} Accounts: ${srcs}. Price revision ${data.meta.price_rev}. ` +
     (data.meta.pruned_files ? `${data.meta.pruned_files} source file(s) pruned by Claude — their rows are still here.` : "");
 
+  restoreTheme();
+
   const acc = el("account");
   data.meta.sources.forEach((s) => {
     const o = document.createElement("option");
@@ -486,10 +528,11 @@ function boot(data) {
     if (state.table) renderTable();
   });
   el("theme").addEventListener("click", () => {
-    const cur = document.documentElement.getAttribute("data-theme");
-    const next = cur === "dark" ? "light" : cur === "light" ? "" : "dark";
-    if (next) document.documentElement.setAttribute("data-theme", next);
-    else document.documentElement.removeAttribute("data-theme");
+    // Flip what is CURRENTLY RENDERED, not the attribute. Cycling
+    // auto -> dark -> light -> auto is broken, because "auto" renders
+    // identically to whichever mode the OS is in: one step of the cycle
+    // changed nothing on screen.
+    applyTheme(effectiveTheme() === "dark" ? "light" : "dark");
     renderAll();                       // colours are read from CSS at draw time
   });
   renderAll();
