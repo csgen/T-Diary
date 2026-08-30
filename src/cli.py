@@ -20,6 +20,7 @@ from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
 from .price import PriceError, PriceRevConflict, compute_cost, load_prices
 from .runlog import tee_to_log
+from .serve import make_server
 from .scan import (SourceUnavailable, detect_deleted, head_bytes, head_sha256,
                    plan_read, select_candidates, sweep)
 from .store import SCHEMA_VERSION, SchemaTooNew, Store
@@ -640,6 +641,29 @@ def cmd_run(args) -> int:
     return code
 
 
+def cmd_serve(args) -> int:
+    """Serve web/ with a refresh endpoint behind it.
+
+    Replaces `python -m http.server` in web/. The page already needed a server
+    -- browsers block fetch over file:// -- so this adds a capability rather
+    than a dependency, and the page degrades to exactly its current behaviour
+    anywhere this is not running.
+    """
+    cfg = load_config(args.config)
+    httpd = make_server(cfg.root_dir, args.port, args.bind)
+    print(f"serving {cfg.root_dir}/web on http://{args.bind}:{args.port}")
+    print(f"  refresh endpoint runs `{os.path.basename(sys.executable)} -m src run`"
+          f" and writes the same log a scheduled run does")
+    print("  ctrl-c to stop")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        httpd.server_close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -692,6 +716,13 @@ def build_parser() -> argparse.ArgumentParser:
     rn.add_argument("--full", action="store_true",
                     help="ignore scan state; reparse everything")
     rn.set_defaults(func=cmd_run)
+
+    sv = sub.add_parser("serve", help="serve the dashboard with a refresh button")
+    sv.add_argument("--port", type=int, default=8899, help="default 8899")
+    sv.add_argument("--bind", default="127.0.0.1",
+                    help="default 127.0.0.1; this endpoint runs a subprocess, "
+                         "so binding wider exposes that")
+    sv.set_defaults(func=cmd_serve)
     return p
 
 
