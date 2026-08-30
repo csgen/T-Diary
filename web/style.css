@@ -160,3 +160,9 @@ th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size
 .foot { margin-top: 18px; }
 svg { display: block; }
 svg text { fill: var(--muted); font-size: 10px; }
+
+/* --- refresh ---------------------------------------------------------- */
+.ghost:disabled { opacity: 0.55; cursor: default; }
+/* Transient, and it reports a partial success as often as a failure, so it
+   reads as a note rather than an alarm. */
+.warn { color: var(--muted); font-style: italic; }

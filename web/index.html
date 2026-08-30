@@ -15,8 +15,12 @@
       <p class="sub" id="coverage">loading…</p>
     </div>
     <div class="head-right">
+      <!-- Hidden until /api/health answers: the page must stay usable as a
+           plain static asset (goal 7), where there is nothing to refresh with. -->
+      <button id="refresh" class="ghost" type="button" hidden>Refresh</button>
       <button id="theme" class="ghost" type="button" aria-label="Toggle theme">◐</button>
       <p class="sub" id="generated"></p>
+      <p class="sub warn" id="refreshNote"></p>
     </div>
   </header>
 

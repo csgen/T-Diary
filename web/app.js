@@ -498,7 +498,10 @@ function renderAll() {
   if (state.table) renderTable();
 }
 
-function boot(data) {
+// Split from boot() so a refresh can re-render without re-wiring. Calling the
+// old boot() twice appended the account options again and double-bound every
+// listener, so each control fired N times after N refreshes.
+function applyData(data) {
   DATA = data;
   const c = data.meta.coverage;
   el("coverage").textContent =
@@ -509,14 +512,23 @@ function boot(data) {
     `${data.meta.cost_note} Accounts: ${srcs}. Price revision ${data.meta.price_rev}. ` +
     (data.meta.pruned_files ? `${data.meta.pruned_files} source file(s) pruned by Claude — their rows are still here.` : "");
 
-  restoreTheme();
-
+  // Rebuilt rather than appended: a refresh may reveal a source that did not
+  // exist at first load, and appending would duplicate the ones that did.
   const acc = el("account");
+  while (acc.options.length > 1) acc.remove(1);
   data.meta.sources.forEach((s) => {
     const o = document.createElement("option");
     o.value = s.id; o.textContent = s.label;
     acc.appendChild(o);
   });
+  if (![...acc.options].some((o) => o.value === state.account)) state.account = "all";
+  el("account").value = state.account;
+  renderAll();
+}
+
+function boot(data) {
+  applyData(data);
+  restoreTheme();
   ["metric", "groupby", "account", "sidechain", "range"].forEach((id) => {
     el(id).value = state[id];
     el(id).addEventListener("change", (e) => { state[id] = e.target.value; renderAll(); });
@@ -543,9 +555,53 @@ function boot(data) {
 // directive may be cached heuristically -- so after `export` rewrote data.json the
 // page would keep rendering the previous run's numbers, with no sign anything was
 // stale except the "updated ..." stamp in the header.
+// The page is static by design (goal 7) and stays that way: the refresh button
+// is installed only if something answers /api/health. Over file://, or behind
+// any ordinary static host, it never appears and nothing else changes.
+function initRefresh() {
+  const btn = el("refresh");
+  const note = el("refreshNote");
+  if (!btn) return;
+
+  fetch("api/health", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((h) => { if (h && h.refresh) btn.hidden = false; })
+    .catch(() => {});                       // no backend: stay hidden, silently
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Refreshing…";
+    note.textContent = "";
+    try {
+      const r = await fetch("api/refresh", {
+        method: "POST",
+        cache: "no-store",
+        // Non-simple header, so a cross-origin page cannot trigger this.
+        headers: { "X-TokenDiary": "refresh" },
+      });
+      const body = await r.json().catch(() => ({}));
+      // Exit 1 is a partial success: a source was unavailable and the others
+      // ingested. The file on disk is newer, so reload it rather than treating
+      // this as a failure (D17). The server maps that to 200 for the same reason.
+      if (!r.ok) throw new Error(body.error || firstLine(body.output) || "refresh failed");
+      const fresh = await fetch("data.json", { cache: "no-store" }).then((x) => x.json());
+      applyData(fresh);
+      note.textContent = body.exit_code === 1 ? "updated, but a source was unavailable" : "";
+    } catch (e) {
+      note.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
+}
+
+const firstLine = (t) => (t || "").split("\n").filter(Boolean).pop() || "";
+
 fetch("data.json", { cache: "no-store" })
   .then((r) => r.json())
-  .then(boot)
+  .then((d) => { boot(d); initRefresh(); })
   .catch(() => {
     el("coverage").textContent =
       "Could not load data.json. Run `python -m src export`, then serve this folder " +
