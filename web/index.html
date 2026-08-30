@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-palette="#2a78d6,#eb6834,#1baf7a,#eda100,#e87ba4">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tokenDiary</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="viz-root">
+
+  <header class="head">
+    <div>
+      <h1>tokenDiary</h1>
+      <p class="sub" id="coverage">loading…</p>
+    </div>
+    <div class="head-right">
+      <button id="theme" class="ghost" type="button" aria-label="Toggle theme">◐</button>
+      <p class="sub" id="generated"></p>
+    </div>
+  </header>
+
+  <section class="tiles" id="tiles" aria-label="Summary"></section>
+
+  <section class="controls" aria-label="Filters">
+    <div class="ctl">
+      <label for="metric">Metric</label>
+      <select id="metric">
+        <option value="cost">Notional cost</option>
+        <option value="tokens">All tokens</option>
+        <option value="billable">Tokens excl. cache read</option>
+        <option value="o">Output tokens</option>
+        <option value="n">API calls</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="account">Account</label>
+      <select id="account">
+        <option value="all">All accounts</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="groupby">Break down by</label>
+      <select id="groupby">
+        <option value="s">Account</option>
+        <option value="m">Model</option>
+        <option value="component">Cost component</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="sidechain">Subagents</label>
+      <select id="sidechain">
+        <option value="all">Included</option>
+        <option value="only">Only subagents</option>
+        <option value="none">Excluded</option>
+      </select>
+    </div>
+    <div class="ctl">
+      <label for="range">Range</label>
+      <select id="range">
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="default">Since both accounts</option>
+        <option value="all" selected>All history</option>
+      </select>
+    </div>
+    <div class="ctl ctl-end">
+      <button id="tableToggle" class="ghost" type="button" aria-expanded="false">Table view</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-heat">
+    <h2 id="h-heat">Daily activity</h2>
+    <p class="sub" id="heat-sub"></p>
+    <div class="scroll"><div id="heatmap"></div></div>
+    <div class="legend-row">
+      <span class="sub">less</span><div id="heatscale" class="heatscale"></div><span class="sub">more</span>
+      <span class="sub sep" id="heat-max"></span>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-trend">
+    <h2 id="h-trend">Trend</h2>
+    <p class="sub" id="trend-sub"></p>
+    <div id="legend" class="legend"></div>
+    <div class="scroll"><div id="trend"></div></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-mix">
+    <h2 id="h-mix">Where the cost goes</h2>
+    <p class="sub">Cache reads dominate token <em>volume</em>; 1-hour cache writes dominate
+      <em>spend</em>. One number cannot show both.</p>
+    <div id="mix"></div>
+  </section>
+
+  <section class="card" id="tableCard" hidden aria-labelledby="h-table">
+    <h2 id="h-table">Table</h2>
+    <div class="scroll"><table id="table"></table></div>
+  </section>
+
+  <footer class="foot">
+    <p class="sub" id="footnote"></p>
+  </footer>
+</div>
+
+<div id="tip" class="tip" role="status" aria-live="polite" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

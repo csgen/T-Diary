@@ -14,6 +14,7 @@ import sys
 import time
 from collections import Counter
 
+from . import export as export_mod
 from .config import ConfigError, load_config, resolve_account
 from .parse import merge_records, parse_file
 from .price import PriceError, PriceRevConflict, compute_cost, load_prices
@@ -526,6 +527,32 @@ def cmd_tz(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    """Write web/data.json for the static dashboard."""
+    cfg = load_config(args.config)
+    if not os.path.exists(cfg.db_path):
+        print(f"no database at {cfg.db_path} -- run `ingest` first", file=sys.stderr)
+        return 2
+
+    out = args.out or f"{cfg.root_dir}/web/data.json"
+    with Store(cfg.db_path) as store:
+        payload = export_mod.build(store, cfg)
+        size = export_mod.write(payload, out)
+
+    meta, cov = payload["meta"], payload["meta"]["coverage"]
+    print(f"wrote {out}  ({size / 1024:.0f} KB)")
+    print(f"  {cov['calls']:,} calls over {cov['active_days']} active days"
+          f"   {cov['first']} .. {cov['last']}")
+    print(f"  {len(payload['daily']):,} daily rows  "
+          f"({len(meta['sources'])} sources x {len(meta['models'])} models)")
+    unpriced = sum(r["unpriced"] for r in payload["daily"])
+    if unpriced:
+        print(f"  warning: {unpriced:,} call(s) have no cost", file=sys.stderr)
+    print()
+    print(f"open {cfg.root_dir}/web/index.html")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tokendiary", description="Claude Code usage tracker")
     p.add_argument("-c", "--config", help="path to config.toml")
@@ -569,6 +596,10 @@ def build_parser() -> argparse.ArgumentParser:
     tzp.add_argument("--set-from", metavar="UTC_TS",
                      help="also move the newest period's start, e.g. 2026-09-15T12:00:00Z")
     tzp.set_defaults(func=cmd_tz)
+
+    ex = sub.add_parser("export", help="write web/data.json for the dashboard")
+    ex.add_argument("--out", help="output path (default web/data.json)")
+    ex.set_defaults(func=cmd_export)
     return p
 
 

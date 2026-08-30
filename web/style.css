@@ -1,0 +1,162 @@
+/* tokenDiary dashboard.
+   Colour roles come from the validated reference palette; the chart body is
+   written against roles, never raw hex, so light/dark swap in one place.
+   Dark values are declared under BOTH the media query and the [data-theme]
+   scope so the toggle wins in either direction. */
+
+:root {
+  color-scheme: light;
+  --surface-1:  #fcfcfb;
+  --plane:      #f9f9f7;
+  --ink:        #0b0b0b;
+  --ink-2:      #52514e;
+  --muted:      #898781;
+  --grid:       #e1e0d9;
+  --axis:       #c3c2b7;
+  --border:     rgba(11, 11, 11, 0.10);
+  --good:       #006300;
+
+  --series-1: #2a78d6;   /* blue    */
+  --series-2: #eb6834;   /* orange  */
+  --series-3: #1baf7a;   /* aqua    */
+  --series-4: #eda100;   /* yellow  */
+  --series-5: #e87ba4;   /* magenta */
+
+  /* Sequential ramp, light -> dark. Step 100 is "barely any", and an empty
+     day is not painted at all so "no work" reads as absent, not as low. */
+  --seq-1: #cde2fb;
+  --seq-2: #9ec5f4;
+  --seq-3: #6da7ec;
+  --seq-4: #2a78d6;
+  --seq-5: #1c5cab;
+  --seq-6: #104281;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane:     #0d0d0d;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255, 255, 255, 0.10);
+    --good:      #0ca30c;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --plane:     #0d0d0d;
+  --ink:       #ffffff;
+  --ink-2:     #c3c2b7;
+  --muted:     #898781;
+  --grid:      #2c2c2a;
+  --axis:      #383835;
+  --border:    rgba(255, 255, 255, 0.10);
+  --good:      #0ca30c;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.viz-root {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
+  background: var(--plane);
+  color: var(--ink);
+}
+
+h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
+h2 { font-size: 14px; margin: 0 0 2px; font-weight: 600; }
+.sub { margin: 0; color: var(--ink-2); font-size: 12px; }
+.sub.sep { margin-left: auto; }
+em { font-style: normal; font-weight: 600; color: var(--ink); }
+
+.head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+.head-right { display: flex; align-items: center; gap: 10px; }
+
+.ghost {
+  font: inherit; font-size: 12px; color: var(--ink-2);
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+.ghost:hover { background: var(--surface-1); color: var(--ink); }
+
+/* --- stat tiles ------------------------------------------------------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px;
+}
+.tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.tile .v { font-size: 24px; font-weight: 600; margin: 2px 0 1px; letter-spacing: -0.02em; }
+.tile .d { font-size: 12px; color: var(--ink-2); }
+.tile .live { color: var(--series-2); font-weight: 600; }
+
+/* --- controls --------------------------------------------------------- */
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 16px; }
+.ctl { display: flex; flex-direction: column; gap: 3px; }
+.ctl-end { margin-left: auto; }
+.ctl label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.ctl select {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; min-width: 150px;
+}
+
+/* --- cards ------------------------------------------------------------ */
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px; margin-bottom: 14px;
+}
+.scroll { overflow-x: auto; margin-top: 10px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
+.legend .item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+.legend-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.heatscale { display: flex; gap: 2px; }
+.heatscale i { width: 11px; height: 11px; border-radius: 2px; display: block; }
+
+/* --- table ------------------------------------------------------------ */
+table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.04em; }
+
+/* --- tooltip ---------------------------------------------------------- */
+.tip {
+  position: fixed; z-index: 20; pointer-events: none;
+  background: var(--surface-1); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; line-height: 1.45;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16); max-width: 260px;
+}
+.tip b { font-weight: 600; }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; }
+.tip .row span:last-child { font-variant-numeric: tabular-nums; }
+.tip .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+
+.foot { margin-top: 18px; }
+svg { display: block; }
+svg text { fill: var(--muted); font-size: 10px; }
