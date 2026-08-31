@@ -1,5 +1,7 @@
 # tokenDiary - a simple dashboard for Claude usage
 
+![alt text](image-1.png)
+
 A local, durable record of Claude Code token usage — and what it would have cost.
 
 **What this assumes.** You use Claude Code on this machine — the desktop app, VS Code, a terminal, WSL. tokenDiary only reads the session files Claude Code writes to disk, so what it can show you is exactly what those files contain.
@@ -248,4 +250,3 @@ pwsh -NoProfile -File scripts/register-tasks.ps1 -Python <你的 python.exe 路�
 ```bash
 pwsh -NoProfile -File scripts/register-tasks.ps1 -DailyAt 09:00 -WeeklyOn Saturday
 ```
-![alt text](image-1.png)
