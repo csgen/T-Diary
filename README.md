@@ -41,6 +41,21 @@ Three Windows tasks, registered in one step (see below):
 
 Times are defaults you can change (`-DailyAt`, `-WeeklyAt`, `-WeeklyOn`). Tasks run only while you are logged in — a locked screen still counts, signing out does not.
 
+**This part is Windows-only.** On macOS or Linux, schedule it yourself. `run` is a single
+command that reports success or failure through its exit code, so a crontab line is enough:
+
+Put these in `crontab -e`:
+
+```cron
+0 21 * * *  cd /path/to/tokenDiary && /usr/bin/python3 -m src run
+0 20 * * 0  cd /path/to/tokenDiary && /usr/bin/python3 -m src run --full
+@reboot     cd /path/to/tokenDiary && /usr/bin/python3 -m src run
+```
+
+Daily at 21:00, a full re-read on Sundays at 20:00, and a catch-up at boot. That last line
+stands in for the Windows at-logon task: unlike Task Scheduler, cron does **not** run a job
+it missed, so without it a machine that was off at 21:00 simply skips that day.
+
 ### Dashboard
 
 - Calendar heatmap, stacked daily trend, stat tiles, and a table view of the same numbers.
@@ -56,6 +71,14 @@ Times are defaults you can change (`-DailyAt`, `-WeeklyAt`, `-WeeklyOn`). Tasks 
 
 **Requirements:** Python 3.11 or newer. Nothing to install.
 
+| | Windows | macOS / Linux |
+|---|---|---|
+| Scanning, storage, pricing, dashboard | yes | yes |
+| Automatic scheduling | one script, below | cron or launchd |
+| WSL sources over `//wsl.localhost` | yes | not applicable |
+
+Only the scheduling helper is platform-specific, nothing else in the code is.
+
 ```bash
 git clone <this repo> && cd tokenDiary
 cp .env.example .env
@@ -65,7 +88,7 @@ Edit `.env` and fill in at least one source — an id and the path to that insta
 Code projects directory.
 
 ```
-TD_S1_ID=laptop
+TD_S1_ID=account1
 TD_S1_PATH=C:/Users/<you>/.claude/projects
 ```
 
@@ -148,6 +171,21 @@ Python 3.11+，仅使用标准库。无依赖、无网络请求、无需构建�
 以上时间均为默认值，可通过 `-DailyAt`、`-WeeklyAt`、`-WeeklyOn` 修改。任务只在你处于登录
 状态时运行 —— 锁屏仍算登录，注销则不算。
 
+**这部分仅限 Windows。** 在 macOS 或 Linux 上请自行安排定时任务。`run` 是一条完整的命令，
+并通过退出码汇报成功或失败，因此一行 crontab 就够了：
+
+在 `crontab -e` 中写入：
+
+```cron
+0 21 * * *  cd /path/to/tokenDiary && /usr/bin/python3 -m src run
+0 20 * * 0  cd /path/to/tokenDiary && /usr/bin/python3 -m src run --full
+@reboot     cd /path/to/tokenDiary && /usr/bin/python3 -m src run
+```
+
+即每天 21:00 增量扫描、每周日 20:00 完整重读，以及开机时补跑一次。最后一行对应 Windows 的
+"登录时"任务：与 Task Scheduler 不同，cron **不会**补跑错过的任务，因此没有这一行的话，
+21:00 时处于关机状态的那一天就会被直接跳过。
+
 ### 看板
 
 - 日历热力图、每日堆叠趋势、统计卡片，以及同一份数据的表格视图。
@@ -164,6 +202,14 @@ Python 3.11+，仅使用标准库。无依赖、无网络请求、无需构建�
 
 **环境要求：** Python 3.11 或更高版本，无需安装任何依赖。
 
+| | Windows | macOS / Linux |
+|---|---|---|
+| 扫描、存储、计价、看板 | 支持 | 支持 |
+| 自动定时任务 | 一个脚本，见下文 | cron 或 launchd |
+| 通过 `//wsl.localhost` 读取 WSL | 支持 | 不适用 |
+
+只有定时任务脚本与平台相关,代码其余部分都没有平台限制。
+
 ```bash
 git clone <本仓库> && cd tokenDiary
 cp .env.example .env
@@ -172,7 +218,7 @@ cp .env.example .env
 编辑 `.env`，至少填入一个数据源：一个 id，以及该 Claude Code 安装的 projects 目录路径。
 
 ```
-TD_S1_ID=laptop
+TD_S1_ID=account1
 TD_S1_PATH=C:/Users/<你>/.claude/projects
 ```
 
