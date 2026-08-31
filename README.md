@@ -247,3 +247,4 @@ pwsh -NoProfile -File scripts/register-tasks.ps1 -Python <你的 python.exe 路�
 ```bash
 pwsh -NoProfile -File scripts/register-tasks.ps1 -DailyAt 09:00 -WeeklyOn Saturday
 ```
+![alt text](image-1.png)
