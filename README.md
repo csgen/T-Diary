@@ -33,7 +33,8 @@ Python 3.11+, standard library only. No dependencies, no network, no build step.
 
 ### Scheduling
 
-Three Windows tasks, registered in one step (see below):
+Three Windows tasks, registered in one step (see below). All times are **local machine
+time**:
 
 - **Daily at 21:00** — a quick incremental scan.
 - **At logon** — catches up if the machine was off or you were signed out at 21:00.
@@ -162,7 +163,7 @@ Python 3.11+，仅使用标准库。无依赖、无网络请求、无需构建�
 
 ### 定时任务
 
-三个 Windows 计划任务，一步注册完成（见下文）：
+三个 Windows 计划任务，一步注册完成（见下文）。所有时间均为**本机本地时间**：
 
 - **每天 21:00** —— 快速增量扫描。
 - **登录时** —— 如果 21:00 时机器关着或你已注销，这次会补上。
