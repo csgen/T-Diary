@@ -218,9 +218,38 @@ class PricesFileTests(unittest.TestCase):
             (1.0, 5.0, 1.25, 2.0, 0.10))
         fable = p.resolve("claude-fable-5", "2026-08-01")
         self.assertEqual((fable.input, fable.output), (10.0, 50.0))
+        opus55 = p.resolve("claude-opus-5-5", "2026-09-24")
+        self.assertEqual(
+            (opus55.input, opus55.output, opus55.cache_write_5m,
+             opus55.cache_write_1h, opus55.cache_read),
+            (4.0, 20.0, 5.0, 8.0, 0.20))
+
+    def test_opus_5_5_cache_reads_are_the_documented_exception(self):
+        """Opus 5.5 reads cache at 0.05x base input, half the usual discount rate.
+
+        Kept apart from test_shipped_cache_multipliers_hold so the exception is
+        stated once, on purpose, instead of weakening that test's rule.
+        """
+        p = load_prices(PROJECT_ROOT)
+        r = p.resolve("claude-opus-5-5", "2026-09-24")
+        self.assertAlmostEqual(r.cache_read, r.input * 0.05)
+        self.assertAlmostEqual(r.cache_write_5m, r.input * 1.25)
+        self.assertAlmostEqual(r.cache_write_1h, r.input * 2.0)
+
+    def test_opus_5_5_fast_mode_rates(self):
+        """Fast mode is a whole rate card; cache multipliers apply on top of it."""
+        p = load_prices(PROJECT_ROOT)
+        f = p.resolve("claude-opus-5-5", "2026-09-24", "fast")
+        self.assertEqual((f.input, f.output), (8.0, 40.0))
+        self.assertAlmostEqual(f.cache_write_5m, 10.0)
+        self.assertAlmostEqual(f.cache_write_1h, 16.0)
+        self.assertAlmostEqual(f.cache_read, f.input * 0.05)
 
     def test_shipped_cache_multipliers_hold(self):
-        """1.25x / 2.0x / 0.1x of base input, per the published table."""
+        """1.25x / 2.0x / 0.1x of base input, per the published table.
+
+        Claude Opus 5.5 is excluded: its cache reads are 0.05x, covered above.
+        """
         p = load_prices(PROJECT_ROOT)
         for model in ("claude-opus-5", "claude-fable-5", "claude-haiku-4-5", "claude-sonnet-5"):
             r = p.resolve(model, "2026-08-01")
