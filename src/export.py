@@ -17,6 +17,8 @@ import datetime
 import json
 import os
 
+from .price import PriceError, load_prices
+
 # Short keys: at daily x source x model x sidechain grain this file is mostly
 # repeated field names, and the page is the only reader.
 DAILY_SQL = """
@@ -43,6 +45,25 @@ SELECT local_hour AS h, COUNT(*) AS n,
        SUM(COALESCE(cost_usd, 0)) AS cost
   FROM usage_event GROUP BY local_hour ORDER BY local_hour
 """
+
+
+def series_order(daily, cfg) -> list[str]:
+    """Model ids in the order the dashboard assigns colours.
+
+    Deferred to prices.json so that adding a model cannot repaint the models
+    already on screen -- see Prices.series_order for why order matters here at
+    all. Falls back to alphabetical when the rate table cannot be read: a
+    missing prices.json should cost the dashboard its colour stability, not its
+    existence, since every number on the page is already in the database.
+    """
+    observed = {r["m"] for r in daily}
+    root = getattr(cfg, "root_dir", None)
+    if root:
+        try:
+            return load_prices(root).series_order(observed)
+        except PriceError:
+            pass
+    return sorted(observed)
 
 
 def build(store, cfg) -> dict:
@@ -86,7 +107,7 @@ def build(store, cfg) -> dict:
             "coverage": {"first": cover["f"], "last": cover["l"],
                          "active_days": cover["days"], "calls": cover["n"]},
             "sources": sources,
-            "models": sorted({r["m"] for r in daily}),
+            "models": series_order(daily, cfg),
             "cost_note": "Notional: what this usage would cost at API list rates.",
         },
         "daily": daily,

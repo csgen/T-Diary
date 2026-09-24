@@ -15,7 +15,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.price import PriceError, compute_cost, load_prices, semantic_hash  # noqa: E402
+from src.price import (  # noqa: E402
+    PriceError, Prices, compute_cost, load_prices, semantic_hash)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -197,6 +198,52 @@ class PricesFileTests(unittest.TestCase):
         b = {"models": SIMPLE, "server_tools": {"web_search_per_request": 0.02}}
         self.assertNotEqual(semantic_hash(a), semantic_hash(b))
 
+class SeriesOrderTests(unittest.TestCase):
+    """Order is the dashboard's colour assignment, so it is load-bearing."""
+
+    def prices(self, *names):
+        return Prices(rev=1, models={n: [] for n in names}, web_search_per_request=0.0,
+                      web_fetch_per_request=0.0, content_hash="h", raw="{}", path="p")
+
+    def test_order_is_declaration_order_reversed(self):
+        p = self.prices("newest", "middle", "oldest")
+        self.assertEqual(p.series_order({"oldest", "middle", "newest"}),
+                         ["oldest", "middle", "newest"])
+
+    def test_a_model_added_at_the_top_does_not_move_the_others(self):
+        """The whole point: new model takes the next free colour slot."""
+        before = self.prices("b", "a").series_order({"a", "b"})
+        after = self.prices("c", "b", "a").series_order({"a", "b", "c"})
+        self.assertEqual(after[:len(before)], before)
+        self.assertEqual(after[-1], "c")
+
+    def test_alphabetical_order_would_have_moved_them(self):
+        """Guards the reason this function exists, not just its output."""
+        self.assertNotEqual(sorted(["a", "b"]), sorted(["a", "b", "aa"])[:2])
+
+    def test_date_suffixed_ids_rank_by_base_but_keep_their_own_id(self):
+        """Ranked as claude-haiku-4-5, returned as the id the daily rows carry."""
+        p = self.prices("claude-opus-5", "claude-haiku-4-5")
+        self.assertEqual(p.series_order({"claude-opus-5", "claude-haiku-4-5-20251001"}),
+                         ["claude-haiku-4-5-20251001", "claude-opus-5"])
+
+    def test_unpriced_models_sort_last_and_never_displace_a_priced_one(self):
+        p = self.prices("b", "a")
+        self.assertEqual(p.series_order({"a", "b", "zzz", "mystery"}),
+                         ["a", "b", "mystery", "zzz"])
+
+    def test_models_absent_from_the_data_leave_no_gap(self):
+        """A priced but unobserved model must not consume a colour slot."""
+        p = self.prices("c", "b", "a")
+        self.assertEqual(p.series_order({"a", "c"}), ["a", "c"])
+
+    def test_shipped_file_puts_the_newest_model_first(self):
+        """The convention is only self-enforcing if the file follows it."""
+        p = load_prices(PROJECT_ROOT)
+        self.assertEqual(next(iter(p.models)), "claude-opus-5-5")
+
+
+class ShippedPriceTests(unittest.TestCase):
     def test_shipped_prices_file_covers_every_model_in_use(self):
         """The real prices.json must price every model this project has seen."""
         p = load_prices(PROJECT_ROOT)
