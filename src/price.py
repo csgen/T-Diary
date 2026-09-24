@@ -95,6 +95,29 @@ class Prices:
         stripped = _DATE_SUFFIX.sub("", model)
         return stripped if stripped in self.models else model
 
+    def series_order(self, observed) -> list[str]:
+        """Observed model ids in the order the dashboard assigns colours.
+
+        Declaration order in prices.json, REVERSED. The dashboard colours by
+        position, so this order is the colour assignment, and reversing it means
+        a model added at the TOP of the file lands at the END here and takes the
+        next free slot -- every model already on screen keeps its colour.
+
+        Alphabetical order did not have that property: a future
+        `claude-mythos-5` sorts between haiku and opus and would repaint every
+        Opus below it, so a chart the user had learned would silently change
+        meaning. Hence the convention: NEW MODELS GO AT THE TOP OF prices.json.
+
+        Ids the table does not price keep a stable place of their own, after the
+        known ones, so an unpriced model never displaces a priced one.
+        """
+        rank = {name: i for i, name in enumerate(reversed(list(self.models)))}
+        known, unknown = [], []
+        for model in observed:
+            (known if self.normalize(model) in rank else unknown).append(model)
+        known.sort(key=lambda m: rank[self.normalize(m)])
+        return known + sorted(unknown)
+
     def resolve(self, model: str, on_date: str, speed: str | None = None) -> RateCard | None:
         """The rate card in force for `model` on `on_date`.
 

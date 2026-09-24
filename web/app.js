@@ -12,7 +12,11 @@
  */
 
 const NS = "http://www.w3.org/2000/svg";
-const SERIES = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5"];
+// Eight categorical slots, in fixed order. The 9th would wrap onto the 1st and
+// paint two entities the same colour, so colorOf() greys the overflow instead of
+// lying; if this project ever runs 9+ models at once, fold the tail into "other".
+const SERIES = ["--series-1", "--series-2", "--series-3", "--series-4",
+                "--series-5", "--series-6", "--series-7", "--series-8"];
 const SEQ = ["--seq-1", "--seq-2", "--seq-3", "--seq-4", "--seq-5", "--seq-6"];
 
 const COMPONENTS = [
@@ -88,7 +92,11 @@ function shift(iso, days) {
 }
 
 /** Series keys in a fixed order, so a filter that removes one never repaints
- *  the survivors -- colour follows the entity, never its rank. */
+ *  the survivors -- colour follows the entity, never its rank.
+ *
+ *  For models that order is the exporter's, taken from prices.json declaration
+ *  order reversed, NOT alphabetical: adding a model must not recolour the ones
+ *  already on the chart. Do not sort this. */
 function seriesKeys() {
   if (state.groupby === "component") return COMPONENTS.map((c) => c.key);
   if (state.groupby === "m") return DATA.meta.models;
@@ -102,7 +110,10 @@ function seriesLabel(key) {
   return s ? s.label : key;
 }
 
-const colorOf = (key) => css(SERIES[seriesKeys().indexOf(key) % SERIES.length]);
+const colorOf = (key) => {
+  const i = seriesKeys().indexOf(key);
+  return i >= 0 && i < SERIES.length ? css(SERIES[i]) : css("--muted");
+};
 
 /** date -> { total, parts: {seriesKey: value} }, with every day in range present.
  *

@@ -16,7 +16,11 @@
       "absolute, so the exception lives in the numbers, not in the code.",
       "",
       "effective_from is set to a floor date because the published page gives current",
-      "prices only."
+      "prices only.",
+      "",
+      "ORDER MATTERS, so add a new model at the TOP of \"models\". The dashboard",
+      "colours its series by this order reversed, so the newest model takes the next",
+      "free colour and every model already on a chart keeps the one it had."
     ]
   },
   "server_tools": {
@@ -25,16 +29,6 @@
     "_note": "Web search is $10 per 1,000 searches. Web fetch adds no charge beyond tokens."
   },
   "models": {
-    "claude-fable-5": [
-      {
-        "effective_from": "2000-01-01",
-        "input": 10.0,
-        "output": 50.0,
-        "cache_write_5m": 12.5,
-        "cache_write_1h": 20.0,
-        "cache_read": 1.0
-      }
-    ],
     "claude-opus-5-5": [
       {
         "effective_from": "2000-01-01",
@@ -50,6 +44,16 @@
           "cache_write_1h": 16.0,
           "cache_read": 0.4
         }
+      }
+    ],
+    "claude-fable-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 10.0,
+        "output": 50.0,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20.0,
+        "cache_read": 1.0
       }
     ],
     "claude-opus-5": [
