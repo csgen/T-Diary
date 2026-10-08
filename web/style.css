@@ -18,7 +18,7 @@
 
   --series-1: #2a78d6;   /* blue    */
   --series-2: #eb6834;   /* orange  */
-  --series-3: #1baf7a;   /* aqua    */
+  --series-3: #17b4cf;   /* aqua    */
   --series-4: #eda100;   /* yellow  */
   --series-5: #e87ba4;   /* magenta */
   --series-6: #008300;   /* green   */
@@ -49,7 +49,7 @@
     --good:      #0ca30c;
     --series-1: #3987e5;
     --series-2: #d95926;
-    --series-3: #199e70;
+    --series-3: #14a9c4;
     --series-4: #c98500;
     --series-5: #d55181;
     --series-6: #008300;
@@ -70,7 +70,7 @@
   --good:      #0ca30c;
   --series-1: #3987e5;
   --series-2: #d95926;
-  --series-3: #199e70;
+  --series-3: #14a9c4;
   --series-4: #c98500;
   --series-5: #d55181;
   --series-6: #008300;
