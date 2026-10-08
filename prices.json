@@ -1,10 +1,10 @@
 {
-  "rev": 3,
+  "rev": 4,
   "meta": {
     "currency": "USD",
     "unit": "per million tokens",
     "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-    "retrieved": "2026-09-24",
+    "retrieved": "2026-10-07",
     "note": [
       "These are Anthropic first-party API list prices. tokenDiary reports NOTIONAL cost:",
       "what this usage would have cost at API rates. Our tracked accounts are",
@@ -12,8 +12,9 @@
       "",
       "Cache multipliers relative to base input, per the published table:",
       "  5-minute cache write  1.25x     1-hour cache write  2.0x     cache read  0.1x",
-      "Exception: cache reads on Claude Opus 5.5 are 0.05x, not 0.1x. Rates are stored",
-      "absolute, so the exception lives in the numbers, not in the code.",
+      "Exceptions: cache reads are 0.05x on Claude Opus 5.5 and 0.025x on Claude Fable",
+      "5.1, not 0.1x. Rates are stored absolute, so the exceptions live in the numbers,",
+      "not in the code.",
       "",
       "effective_from is set to a floor date because the published page gives current",
       "prices only.",
@@ -29,6 +30,26 @@
     "_note": "Web search is $10 per 1,000 searches. Web fetch adds no charge beyond tokens."
   },
   "models": {
+    "claude-sonnet-5-5": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 2.0,
+        "output": 10.0,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4.0,
+        "cache_read": 0.2
+      }
+    ],
+    "claude-fable-5-1": [
+      {
+        "effective_from": "2000-01-01",
+        "input": 10.0,
+        "output": 50.0,
+        "cache_write_5m": 12.5,
+        "cache_write_1h": 20.0,
+        "cache_read": 0.25
+      }
+    ],
     "claude-opus-5-5": [
       {
         "effective_from": "2000-01-01",

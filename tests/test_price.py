@@ -240,7 +240,7 @@ class SeriesOrderTests(unittest.TestCase):
     def test_shipped_file_puts_the_newest_model_first(self):
         """The convention is only self-enforcing if the file follows it."""
         p = load_prices(PROJECT_ROOT)
-        self.assertEqual(next(iter(p.models)), "claude-opus-5-5")
+        self.assertEqual(next(iter(p.models)), "claude-sonnet-5-5")
 
 
 class ShippedPriceTests(unittest.TestCase):
@@ -270,18 +270,30 @@ class ShippedPriceTests(unittest.TestCase):
             (opus55.input, opus55.output, opus55.cache_write_5m,
              opus55.cache_write_1h, opus55.cache_read),
             (4.0, 20.0, 5.0, 8.0, 0.20))
+        sonnet55 = p.resolve("claude-sonnet-5-5", "2026-10-07")
+        self.assertEqual(
+            (sonnet55.input, sonnet55.output, sonnet55.cache_write_5m,
+             sonnet55.cache_write_1h, sonnet55.cache_read),
+            (2.0, 10.0, 2.5, 4.0, 0.20))
+        fable51 = p.resolve("claude-fable-5-1", "2026-10-07")
+        self.assertEqual(
+            (fable51.input, fable51.output, fable51.cache_write_5m,
+             fable51.cache_write_1h, fable51.cache_read),
+            (10.0, 50.0, 12.5, 20.0, 0.25))
 
-    def test_opus_5_5_cache_reads_are_the_documented_exception(self):
-        """Opus 5.5 reads cache at 0.05x base input, half the usual discount rate.
+    def test_cache_read_exceptions_are_each_stated_explicitly(self):
+        """Two models discount cache reads below the usual 0.1x of base input.
 
-        Kept apart from test_shipped_cache_multipliers_hold so the exception is
-        stated once, on purpose, instead of weakening that test's rule.
+        Listed one by one rather than folded into the rule below, so adding a
+        model cannot quietly inherit an exception it was never granted. Cache
+        WRITES take the standard multipliers on both.
         """
         p = load_prices(PROJECT_ROOT)
-        r = p.resolve("claude-opus-5-5", "2026-09-24")
-        self.assertAlmostEqual(r.cache_read, r.input * 0.05)
-        self.assertAlmostEqual(r.cache_write_5m, r.input * 1.25)
-        self.assertAlmostEqual(r.cache_write_1h, r.input * 2.0)
+        for model, mult in (("claude-opus-5-5", 0.05), ("claude-fable-5-1", 0.025)):
+            r = p.resolve(model, "2026-10-07")
+            self.assertAlmostEqual(r.cache_read, r.input * mult, msg=model)
+            self.assertAlmostEqual(r.cache_write_5m, r.input * 1.25, msg=model)
+            self.assertAlmostEqual(r.cache_write_1h, r.input * 2.0, msg=model)
 
     def test_opus_5_5_fast_mode_rates(self):
         """Fast mode is a whole rate card; cache multipliers apply on top of it."""
@@ -295,10 +307,11 @@ class ShippedPriceTests(unittest.TestCase):
     def test_shipped_cache_multipliers_hold(self):
         """1.25x / 2.0x / 0.1x of base input, per the published table.
 
-        Claude Opus 5.5 is excluded: its cache reads are 0.05x, covered above.
+        Opus 5.5 and Fable 5.1 are excluded; their cache reads are covered above.
         """
         p = load_prices(PROJECT_ROOT)
-        for model in ("claude-opus-5", "claude-fable-5", "claude-haiku-4-5", "claude-sonnet-5"):
+        for model in ("claude-opus-5", "claude-fable-5", "claude-haiku-4-5",
+                      "claude-sonnet-5", "claude-sonnet-5-5"):
             r = p.resolve(model, "2026-08-01")
             self.assertAlmostEqual(r.cache_write_5m, r.input * 1.25, msg=model)
             self.assertAlmostEqual(r.cache_write_1h, r.input * 2.0, msg=model)
